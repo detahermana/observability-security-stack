@@ -1,0 +1,29 @@
+# Configuration for wazuh-certs-tool.sh (script from packages.wazuh.com).
+# Format follows single-node/config/certs.yml in the wazuh-docker repo exactly.
+#
+# NOTE: this script's KEY is `server` (not `manager`) and the field is `ip`
+# (not `dns`). Using another key/field makes the cert tool fail.
+#
+# Single-node: each role (indexer/manager/dashboard) gets its own cert.
+# The `wazuh.indexer` etc. IPs are Docker container hostnames — resolved
+# automatically by the internal Docker network DNS.
+#
+# Referensi: https://github.com/wazuh/wazuh-docker/blob/master/single-node/config/certs.yml
+
+nodes:
+  # Wazuh indexer nodes (OpenSearch backend)
+  indexer:
+    - name: wazuh.indexer
+      ip: wazuh.indexer
+
+  # Wazuh manager nodes (rule analysis + agent comm).
+  # IMPORTANT: the key is `server` (not `manager`) — that is the internal
+  # Wazuh role name, from before it was renamed to manager.
+  server:
+    - name: wazuh.manager
+      ip: wazuh.manager
+
+  # Wazuh dashboard nodes (web UI OpenSearch Dashboards)
+  dashboard:
+    - name: wazuh.dashboard
+      ip: wazuh.dashboard

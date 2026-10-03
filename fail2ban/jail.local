@@ -1,0 +1,55 @@
+# Extra fail2ban jails, placed on TOP of Debian's defaults-debian.conf.
+# Installed on the VPS (VPS_IP) as /etc/fail2ban/jail.local
+# NOT deployed automatically by CI/CD — reference/backup only.
+#
+# BEFORE this, the VPS had a single jail: sshd. No HTTP protection at all,
+# while internet scanners fired hundreds of requests a day (see nginx/nginx.conf).
+#
+# ---------------------------------------------------------------------------
+# `backend = auto` is REQUIRED. This is the easiest part to get wrong.
+# ---------------------------------------------------------------------------
+# /etc/fail2ban/jail.d/defaults-debian.conf on this VPS contains:
+#     [DEFAULT]
+#     banaction = nftables
+#     banaction_allports = nftables[type=allports]
+#     backend = systemd
+#     [sshd]
+#     enabled = true
+#
+# `backend = systemd` reads journald, NOT files. Our nginx filters read
+# /var/log/nginx/access.log, so with the systemd backend the jail looks
+# "enabled" and `fail2ban-client status` looks healthy, BUT it never bans
+# anyone. `backend = auto` makes fail2ban pick a backend that can read files.
+#
+# ---------------------------------------------------------------------------
+# banaction is NOT forced to iptables-multiport.
+# ---------------------------------------------------------------------------
+# The initial plan was to use iptables-multiport (from jail.conf). Abandoned
+# after reading defaults-debian.conf: this VPS uses nftables. Leave the default
+# in place so it stays consistent with the sshd jail that already works.
+# Verify: `sudo nft list ruleset | grep f2b` — the `f2b-chain` set holds banned
+# IPs. Proven with a ban test on the RFC 5737 address 203.0.113.99.
+#
+# ---------------------------------------------------------------------------
+# Deliberately NO ignoreip here.
+# ---------------------------------------------------------------------------
+# The operator reaches monitor/status/wazuh from anywhere including mobile
+# networks, so the IP changes constantly. A static ignoreip would lock the
+# operator out. What is used instead is a precise pattern: only consecutive
+# 400/404/429 are banned, while a normal browser produces 200/302 (a few 401
+# during auth) that the filter does not match.
+#
+# maxretry=20 findtime=60 bantime=600 follow this VPS's fail2ban defaults
+# (10m/10m/5 for sshd) but are looser because legitimate HTTP is busier than SSH.
+
+[DEFAULT]
+backend = auto
+
+[nginx-ratelimit]
+enabled  = true
+port     = http,https
+filter   = nginx-ratelimit
+logpath  = /var/log/nginx/access.log
+maxretry = 20
+findtime = 60
+bantime  = 600

@@ -1,0 +1,27 @@
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+
+  - name: Loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    editable: false
+
+  # Loki on the site Proxmox host (192.0.2.2). Loki ACTUALLY runs on the
+  # monitoring VPS (10.200.200.1:3100) — NOT on the Proxmox host. All traffic
+  # from the site to 192.0.2.2:3100 is redirected via an iptables NAT rule on
+  # pve (PREROUTING + OUTPUT chain) to 10.200.200.1:3100 over WireGuard. Grafana
+  # on the VPS reaches this IP via a WireGuard route for the 192.0.2.0/24 subnet.
+  # Promtail on each site server (pve/Target-1/Target-2) pushes to 192.0.2.2:3100.
+  - name: LokiSite
+    type: loki
+    access: proxy
+    url: http://192.0.2.2:3100
+    editable: false

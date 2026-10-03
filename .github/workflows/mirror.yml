@@ -1,0 +1,46 @@
+name: Mirror to GitLab
+
+# Every push (any branch or tag) is mirrored in full to GitLab.
+# GitLab Free has no automatic pull-mirroring from GitHub, so a GitHub Actions
+# job does the "push --mirror" to GitLab. Landing on GitLab triggers the
+# .gitlab-ci.yml pipeline automatically.
+#
+# Configure two secrets on the repository (or a named environment):
+#   GITLAB_TOKEN  a GitLab token with push access to the target project
+#   GITLAB_REPO   "<group>/<project>.git" (no scheme, no host)
+#
+# The job is guarded by the ENABLE_GITLAB_MIRROR repository variable so that a
+# checkout without a mirror configured stays green instead of failing on a
+# missing secret.
+
+on:
+  push:
+    branches:
+      - "**"
+    tags:
+      - "**"
+
+permissions:
+  contents: read
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    if: ${{ vars.ENABLE_GITLAB_MIRROR == 'true' }}
+    steps:
+      - name: Checkout (full history + tags)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - name: Push mirror to GitLab
+        env:
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+          GITLAB_REPO: ${{ secrets.GITLAB_REPO }} # e.g. gitlab.com/example-org/monitoring-stack.git
+        run: |
+          if [ -z "$GITLAB_TOKEN" ] || [ -z "$GITLAB_REPO" ]; then
+            echo "::error::GITLAB_TOKEN and/or GITLAB_REPO is not set."
+            exit 1
+          fi
+          git remote add gitlab "https://oauth2:${GITLAB_TOKEN}@${GITLAB_REPO}"
+          git push gitlab "refs/heads/*:refs/heads/*" "refs/tags/*:refs/tags/*" --prune

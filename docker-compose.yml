@@ -1,0 +1,219 @@
+networks:
+  monitoring:
+    driver: bridge
+
+  # The Wazuh stack's network (a separate compose project, deployed with
+  # `-p wazuh` so its name becomes `wazuh_wazuh`).
+  #
+  # Why it is needed: the Wazuh manager sends alerts via the
+  # `custom-alertmanager` integrator to `http://alertmanager:9093/api/v2/alerts`,
+  # but the manager lives on the `wazuh_wazuh` network while Alertmanager lives
+  # on `vps-monitoring_monitoring`. Docker DNS is per-network, so the manager
+  # cannot resolve the name `alertmanager` and the integration fails with:
+  #   "Unable to run integration for custom-alertmanager -> ..."
+  #   "failed to send to Alertmanager: <urlopen error [Errno -2] Name or service
+  #    not known>"
+  #
+  # How to bridge: attach the Alertmanager container to this Wazuh network. The
+  # change is on the monitoring side, so the Wazuh stack is not touched at all
+  # (no hook_url change, no manager restart).
+  #
+  # IMPORTANT about `external: true`:
+  #   `external: true` is REQUIRED. Compose validates the network LABEL, not just
+  #   its name. This network was created by the Wazuh project with the label
+  #   `com.docker.compose.network=wazuh`, while the root compose expects a label
+  #   matching the KEY in this file's `networks:` block. Without `external: true`,
+  #   the deploy fails with:
+  #     network wazuh_wazuh was found but has incorrect label
+  #     com.docker.compose.network set to "wazuh" (expected: "wazuh_wazuh")
+  #   `external: true` means "use it as-is, do not validate/manage it".
+  #
+  #   Consequence: the network MUST exist before the root compose runs. So
+  #   deploy.sh creates it first if missing (idempotent). On a VPS whose Wazuh
+  #   stack already runs (the normal case), the network exists and that block
+  #   does nothing.
+  wazuh_wazuh:
+    external: true
+
+volumes:
+  prometheus_data:
+  grafana_data:
+  loki_data:
+  alertmanager_data:
+  uptime_kuma_data:
+  docker_stats_textfile:
+  promtail_data:
+
+services:
+  # cAdvisor is NOT used on this VPS -- the Docker Engine here uses the
+  # containerd snapshotter (driver-type: io.containerd.snapshotter.v1), and
+  # cAdvisor (up to the latest tested version, v0.52.1) fails completely to
+  # detect any container in this mode ("failed to identify the read-write layer
+  # ID"), because it still looks for the classic overlay2 layerdb structure that
+  # no longer exists. Instead, docker-stats-exporter is used (it reads the Docker
+  # Stats API directly via docker.sock, touching no filesystem/layer at all).
+  docker-stats-exporter:
+    image: python:3.12-alpine
+    container_name: docker-stats-exporter
+    restart: unless-stopped
+    environment:
+      # Timezone (UTC+7). A container does NOT inherit the host timezone -- the
+      # image has its own /etc/localtime, so TZ must be set explicitly per service.
+      - TZ=${TZ:-Asia/Jakarta}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./docker-stats-exporter/docker_stats_exporter.py:/app/docker_stats_exporter.py:ro
+      - docker_stats_textfile:/textfile
+    command: python3 /app/docker_stats_exporter.py
+    mem_limit: 64m
+    cpus: 0.1
+
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    container_name: node-exporter
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-Asia/Jakarta}
+    command:
+      - "--path.rootfs=/host"
+      - "--path.procfs=/host/proc"
+      - "--path.sysfs=/host/sys"
+      - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)"
+      - "--collector.textfile.directory=/textfile"
+    volumes:
+      - /:/host:ro,rslave
+      - docker_stats_textfile:/textfile:ro
+    networks:
+      - monitoring
+    mem_limit: 100m
+    cpus: 0.1
+    depends_on:
+      - docker-stats-exporter
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: prometheus
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-Asia/Jakarta}
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alert.rules.yml:/etc/prometheus/alert.rules.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=15d"
+      - "--web.enable-lifecycle"
+    ports:
+      - "127.0.0.1:9090:9090"
+    networks:
+      - monitoring
+    mem_limit: 400m
+    cpus: 0.5
+    depends_on:
+      - node-exporter
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: alertmanager
+    restart: unless-stopped
+    environment:
+      # Alertmanager uses TZ for the timestamp of Telegram notifications.
+      - TZ=${TZ:-Asia/Jakarta}
+    volumes:
+      - ./alertmanager/alertmanager.generated.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    ports:
+      - "127.0.0.1:9093:9093"
+    networks:
+      - monitoring
+      # Join the Wazuh network so the manager can resolve the name `alertmanager`.
+      # Prometheus sends alerts over `monitoring`, the Wazuh manager over
+      # `wazuh_wazuh`; both are inbound to the same container.
+      - wazuh_wazuh
+    mem_limit: 100m
+    cpus: 0.1
+
+  loki:
+    image: grafana/loki:2.9.10
+    container_name: loki
+    restart: unless-stopped
+    environment:
+      # This image is minimal Alpine WITHOUT tzdata (/usr/share/zoneinfo is
+      # absent), so a zone-name TZ like "Asia/Jakarta" is IGNORED and the clock
+      # stays UTC. Use the POSIX offset format. NOTE: the sign is inverted --
+      # WIB-7 = UTC+7. Verified: `docker exec loki date` must show UTC+7.
+      - TZ=WIB-7
+    volumes:
+      - ./promtail/loki-config.yml:/etc/loki/loki-config.yml:ro
+      - loki_data:/loki
+    command: -config.file=/etc/loki/loki-config.yml
+    ports:
+      - "10.200.200.1:3100:3100"
+    networks:
+      - monitoring
+    mem_limit: 300m
+    cpus: 0.3
+
+  promtail:
+    image: grafana/promtail:2.9.10
+    container_name: promtail
+    restart: unless-stopped
+    environment:
+      # Promtail stamps a local timestamp onto logs before sending to Loki.
+      # Without TZ, logs show as UTC in Grafana.
+      - TZ=${TZ:-Asia/Jakarta}
+    volumes:
+      - ./promtail/promtail-config.yml:/etc/promtail/promtail-config.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - promtail_data:/etc/promtail/state
+    command: -config.file=/etc/promtail/promtail-config.yml
+    networks:
+      - monitoring
+    mem_limit: 256m
+    cpus: 0.2
+    depends_on:
+      - loki
+
+  grafana:
+    image: grafana/grafana-oss:11.2.0
+    container_name: grafana
+    restart: unless-stopped
+    environment:
+      # Grafana: TZ + default dashboard timezone (the user can override in the UI).
+      - TZ=${TZ:-Asia/Jakarta}
+      - GF_DEFAULT_IN_TIMEZONE=browser
+      - GF_SECURITY_ADMIN_USER=${GF_SECURITY_ADMIN_USER}
+      - GF_SECURITY_ADMIN_PASSWORD=${GF_SECURITY_ADMIN_PASSWORD}
+      - GF_SERVER_ROOT_URL=%(protocol)s://%(domain)s/
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "127.0.0.1:3030:3000"
+    networks:
+      - monitoring
+    mem_limit: 450m
+    cpus: 0.3
+    depends_on:
+      - prometheus
+      - loki
+
+  uptime-kuma:
+    image: louislam/uptime-kuma:1
+    container_name: uptime-kuma
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      # network_mode host: TZ still applies to the process inside the container.
+      - TZ=${TZ:-Asia/Jakarta}
+      - UPTIME_KUMA_PORT=3033
+      - UPTIME_KUMA_HOST=127.0.0.1
+    volumes:
+      - uptime_kuma_data:/app/data
+    mem_limit: 300m
+    cpus: 0.2

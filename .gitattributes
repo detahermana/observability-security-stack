@@ -1,0 +1,21 @@
+# Normalize line endings for every contributor, regardless of platform.
+#
+# Text files are stored with LF in the repository and checked out with the
+# platform-native ending. Shell scripts and YAML are forced to LF so they run
+# correctly everywhere (a CRLF shebang breaks a script on Linux).
+* text=auto eol=lf
+
+*.sh        text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.tf         text eol=lf
+Dockerfile  text eol=lf
+*.conf      text eol=lf
+*.ini       text eol=lf
+
+*.png       binary
+*.jpg       binary
+*.jpeg      binary
+*.gif       binary
+*.svg       text eol=lf
+*.ico       binary

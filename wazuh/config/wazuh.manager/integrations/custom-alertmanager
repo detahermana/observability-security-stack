@@ -1,0 +1,32 @@
+#!/bin/sh
+# Wazuh -> Alertmanager integrator wrapper.
+#
+# Wazuh calls this script for every alert that passes the filter in the
+# <integration> block of ossec.conf. Arguments received:
+#   $1 = alert file path (JSON, because alert_format=json)
+#   $2 = api_key   (unused)
+#   $3 = hook_url  (from ossec.conf)
+#
+# This wrapper sets up WAZUH_PATH then calls the Python implementation.
+# The pattern follows the image's built-in integrators (slack, virustotal, etc.).
+
+WPYTHON_BIN="framework/python/bin/python3"
+
+SCRIPT_PATH_NAME="$0"
+DIR_NAME="$(cd "$(dirname "${SCRIPT_PATH_NAME}")"; pwd -P)"
+SCRIPT_NAME="$(basename "${SCRIPT_PATH_NAME}")"
+
+case "${DIR_NAME}" in
+    */integrations)
+        if [ -z "${WAZUH_PATH}" ]; then
+            WAZUH_PATH="$(cd "${DIR_NAME}/.."; pwd)"
+        fi
+        PYTHON_SCRIPT="${DIR_NAME}/${SCRIPT_NAME}.py"
+        ;;
+    *)
+        echo "custom-alertmanager: unrecognized directory: ${DIR_NAME}" >&2
+        exit 1
+        ;;
+esac
+
+"${WAZUH_PATH}/${WPYTHON_BIN}" "${PYTHON_SCRIPT}" "$@"

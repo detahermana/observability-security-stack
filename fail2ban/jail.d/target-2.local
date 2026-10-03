@@ -1,0 +1,77 @@
+# fail2ban — Target-2 (site)
+# Installed as /etc/fail2ban/jail.d/target-2.local
+# NOT deployed automatically by CI/CD — reference/backup only.
+#
+# ---------------------------------------------------------------------------
+# Target-2 SERVES A LARGE CONCURRENT AUDIENCE AT PEAK TIMES
+# ---------------------------------------------------------------------------
+# The nginx rate limit is deliberately NOT installed on the target-2 vhost, and
+# that is a calculated decision, not an oversight:
+#
+#   Users reach the DOMAIN from the SITE NETWORK
+#   -> through the site router, NAT'd to a single public IP
+#   -> nginx sees ONE IP for every user
+#   many users at once x 1 page (~15 assets) = thousands of requests in seconds
+#   rate limit 20 r/s = 1,200 requests/minute
+#   -> most users get HTTP 429 = the task fails
+#
+# Owner's decision: drop the rate limit, rely on fail2ban.
+# Priority: do not let the rate limit cause the task to fail for real users.
+#
+# Protection for those users is still in place, and is REQUIRED:
+#   ignoreip contains 192.0.2.0/24 and 198.51.100.0/24
+#   -> however many requests the users make, they CANNOT be banned.
+#
+# If this ignoreip is removed, a mass of 404s from a single NAT IP could ban
+# the ENTIRE SITE NETWORK. Do not remove it.
+#
+# ---------------------------------------------------------------------------
+# Why bantime is 24 hours (not 15 minutes like Target-1)
+# ---------------------------------------------------------------------------
+# With bantime 900 seconds, 6 scanner IPs cycled ban-unban continuously: banned
+# for 15 minutes, freed, banned again — then requests from the same IP were
+# back in already. With 24 hours + increment, a repeating IP gets progressively
+# longer bans (2x, 4x, ... capped by maxtime).
+#
+# ---------------------------------------------------------------------------
+# Why a second jail (target-2-botsearch)
+# ---------------------------------------------------------------------------
+# The built-in nginx-botsearch filter matches specific file-probe patterns
+# (<block> = a list of sensitive paths), unlike target-2-scan which counts 4xx
+# in general. maxretry 3 (not 30) because the pattern is already very specific —
+# 3 hits are enough to be certain it is a bot.
+#
+# Tested: this filter matched only 27 of 1,954 lines, all scanners. No normal
+# application usage pattern matched it.
+
+[DEFAULT]
+ignoreip = 127.0.0.1/8 ::1 192.0.2.0/24 198.51.100.0/24 203.0.113.0/24
+dbpurgeage = 7d
+
+# --- Jail 1: consecutive 429/400/404 (same pattern as Target-1) ---
+[target-2-scan]
+enabled  = true
+backend  = auto
+logpath  = /var/log/nginx/access.log
+port     = http,https
+filter   = target-2-scan
+maxretry = 30
+findtime = 120
+bantime  = 86400
+bantime.increment = true
+bantime.factor    = 2
+bantime.maxtime   = 86400
+
+# --- Jail 2: sensitive-file probing (built-in filter) ---
+[target-2-botsearch]
+enabled  = true
+backend  = auto
+logpath  = /var/log/nginx/access.log
+port     = http,https
+filter   = nginx-botsearch
+maxretry = 3
+findtime = 300
+bantime  = 86400
+bantime.increment = true
+bantime.factor    = 2
+bantime.maxtime   = 86400

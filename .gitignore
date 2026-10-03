@@ -1,0 +1,35 @@
+.env
+alertmanager/alertmanager.generated.yml
+
+# Deploy state (config checksums for recreate detection)
+.deploy-state
+
+# File config hasil generate (mengandung kredensial / nilai dari env)
+wazuh/config/wazuh.dashboard/wazuh.yml.generated
+
+# Wazuh secrets (passwords, certificates backup)
+wazuh/.env
+wazuh/certs/
+wazuh/config/wazuh.indexer/internal_users.yml
+*-wazuh-certs.tar.gz
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+*.bak
+*.tmp
+*.
+*.rar

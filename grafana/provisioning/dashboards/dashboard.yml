@@ -1,0 +1,45 @@
+apiVersion: 1
+
+providers:
+  # Dashboards for monitoring the VPS itself (host CPU/RAM/disk/network, the
+  # Docker containers of the monitoring stack, etc). The folder appears in the
+  # Grafana sidebar as "VPS Monitoring".
+  #
+  # Important: a provider path must be NON-OVERLAPPING with the other providers
+  # below. The Grafana file provider scans recursively into every subdirectory
+  # of its path, so if path = "/var/lib/grafana/dashboards" and it contains a
+  # "target-2-monitoring/" subdir, the default provider would load files there
+  # too -> the UID "site-overview" appears twice (once from default, once from
+  # the target-2-monitoring provider) -> conflict, Grafana skips the update.
+  # Fix: the VPS dashboards are kept in a "vps/" subdir so the provider path
+  # does NOT overlap with the target-2-monitoring subdir.
+  - name: default
+    orgId: 1
+    folder: "VPS Monitoring"
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards/vps
+
+  # Dashboards for monitoring the site (remote — Proxmox host + Target-1/Target-2
+  # VMs). The target-2-monitoring/ subdir is bound through the same mount as
+  # default in docker-compose.yml
+  # (`./grafana/dashboards:/var/lib/grafana/dashboards:ro`), so the path inside
+  # the container becomes /var/lib/grafana/dashboards/target-2-monitoring/.
+  # The folder appears in the Grafana sidebar as "Site Monitoring".
+  # (The provider name, path, and subdir all use "target-2-monitoring" to stay
+  # consistent with the Grafana folder label.)
+  # Important: this provider path MUST not overlap with the default provider.
+  # Since the default provider path is now "/var/lib/grafana/dashboards/vps"
+  # (no longer "/var/lib/grafana/dashboards"), the overlap is gone.
+  - name: target-2-monitoring
+    orgId: 1
+    folder: "Site Monitoring"
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards/target-2-monitoring

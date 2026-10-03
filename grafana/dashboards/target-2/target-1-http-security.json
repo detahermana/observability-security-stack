@@ -1,0 +1,425 @@
+{
+  "uid": "site-http-security",
+  "title": "Target-1 HTTP Security & Rate Limit",
+  "tags": [
+    "site",
+    "security",
+    "nginx",
+    "rate-limit"
+  ],
+  "timezone": "browser",
+  "editable": true,
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "DS_PROMETHEUS",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {
+          "text": "Prometheus",
+          "value": "Prometheus"
+        },
+        "hide": 2
+      },
+      {
+        "name": "DS_LOKISITE",
+        "type": "datasource",
+        "query": "loki",
+        "current": {
+          "text": "LokiSite",
+          "value": "LokiSite"
+        },
+        "hide": 2
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Rate limit status",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 8,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(promtail_custom_nginx_429_total{job=\"site-promtail\"}[5m])) * 60",
+          "legendFormat": "429/menit",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 30
+              },
+              {
+                "color": "red",
+                "value": 300
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area"
+      },
+      "description": "429 responses per minute (limit_req rate limit). Yellow >30, red >300."
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Connection limit status",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 0,
+        "w": 8,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(promtail_custom_nginx_503_total{job=\"site-promtail\"}[5m])) * 60",
+          "legendFormat": "503/menit",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 20
+              },
+              {
+                "color": "red",
+                "value": 100
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area"
+      },
+      "description": "503 responses per minute. limit_conn always replies 503, not 429."
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Total requests",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 0,
+        "w": 8,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(promtail_custom_nginx_requests_total{job=\"site-promtail\"}[5m])) * 60",
+          "legendFormat": "request/menit",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area"
+      },
+      "description": "Total nginx request rate. Comparison: 429 rising WITHOUT the total rising means a caller is attacking."
+    },
+    {
+      "id": 10,
+      "title": "Rate limit: 429 vs 503 per minute",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 16,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(promtail_custom_nginx_429_total{job=\"site-promtail\"}[5m])) * 60",
+          "legendFormat": "429 (rate limit)",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          }
+        },
+        {
+          "expr": "sum(rate(promtail_custom_nginx_503_total{job=\"site-promtail\"}[5m])) * 60",
+          "legendFormat": "503 (connection limit)",
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          }
+        }
+      ],
+      "description": "Alert thresholds: 429 warning >30/min, critical >300/min. 503 warning >20/min.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 11,
+      "title": "Total request rate",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 4,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(promtail_custom_nginx_requests_total{job=\"site-promtail\"}[5m])) * 60",
+          "legendFormat": "request/menit",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          }
+        }
+      ],
+      "description": "Baseline to judge whether a 429/503 spike comes from rising traffic or from an attack.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 20,
+      "type": "logs",
+      "title": "Recent 429 logs (Loki)",
+      "datasource": {
+        "type": "loki",
+        "uid": "${DS_LOKISITE}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 12,
+        "h": 9
+      },
+      "targets": [
+        {
+          "expr": "{host=\"Target-1\", job=\"nginx\", log_type=\"access\"} |= \" 429 \"",
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKISITE}"
+          }
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "enableLogDetails": true
+      },
+      "description": "Access-log lines with status 429 straight from Loki, to see who the rate limit is holding back."
+    },
+    {
+      "id": 21,
+      "type": "logs",
+      "title": "Recent 5xx logs (Loki)",
+      "datasource": {
+        "type": "loki",
+        "uid": "${DS_LOKISITE}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 12,
+        "w": 12,
+        "h": 9
+      },
+      "targets": [
+        {
+          "expr": "{host=\"Target-1\", job=\"nginx\", log_type=\"access\"} |~ \" (500|502|503|504) \"",
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKISITE}"
+          }
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "enableLogDetails": true
+      },
+      "description": "5xx responses. 503 can mean the connection limit OR a broken upstream."
+    },
+    {
+      "id": 30,
+      "type": "logs",
+      "title": "Scanner probes (.env, .git, server-status)",
+      "datasource": {
+        "type": "loki",
+        "uid": "${DS_LOKISITE}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 21,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "{host=\"Target-1\", job=\"nginx\", log_type=\"access\"} |~ \"(?i)(\\\\.env|\\\\.git|server-status|htpasswd|phpmyadmin|wp-admin)\"",
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKISITE}"
+          }
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "enableLogDetails": true
+      },
+      "description": "Sensitive-file probing attempts. Still served (not 429), so they do not trigger the rate-limit jail."
+    },
+    {
+      "id": 31,
+      "type": "logs",
+      "title": "nginx errors",
+      "datasource": {
+        "type": "loki",
+        "uid": "${DS_LOKISITE}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 21,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "{host=\"Target-1\", job=\"nginx\", log_type=\"error\"}",
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKISITE}"
+          }
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "enableLogDetails": true
+      },
+      "description": "Includes limit_conn rejections and upstream errors."
+    },
+    {
+      "id": 40,
+      "title": "promtail health (log shipping)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 29,
+        "w": 24,
+        "h": 6
+      },
+      "targets": [
+        {
+          "expr": "up{job=\"site-promtail\"}",
+          "legendFormat": "{{instance}} up",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          }
+        }
+      ],
+      "description": "0 means promtail is unreachable: nginx logs AND rate-limit metrics from that host stop flowing.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      }
+    }
+  ]
+}

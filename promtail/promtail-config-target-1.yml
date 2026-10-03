@@ -1,0 +1,167 @@
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /etc/promtail/positions.yaml
+
+# Target-1 sends to 192.0.2.2:3100, not directly to the VPS WireGuard IP.
+# pve (192.0.2.2) has a PREROUTING DNAT rule that redirects
+# 192.0.2.2:3100 -> 10.200.200.1:3100. That redirect is installed by
+# playbook.yml (tag: nat) and persisted via iptables-persistent.
+# Do NOT "fix" this address to 10.200.200.1 — this address is the intended
+# one, and changing it bypasses a path that has already been tested.
+clients:
+  - url: http://192.0.2.2:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: journal
+    journal:
+      max_age: 12h
+      labels:
+        job: systemd-journal
+        host: Target-1
+    relabel_configs:
+      - source_labels: ['__journal__systemd_unit']
+        target_label: 'unit'
+
+  - job_name: docker
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 15s
+    relabel_configs:
+      - target_label: job
+        replacement: docker
+      - target_label: host
+        replacement: Target-1
+      - source_labels: ['__meta_docker_container_name']
+        regex: '/(.*)'
+        target_label: 'container'
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_project']
+        target_label: 'compose_project'
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_service']
+        target_label: 'compose_service'
+      - source_labels: ['__meta_docker_container_id']
+        target_label: 'container_id'
+    pipeline_stages:
+      - docker: {}
+
+  # Nginx logs.
+  #
+  # The host nginx is the only place the evidence of a rate limit (429), a
+  # connection limit (503), and a fail2ban ban lives. Before this job existed,
+  # those events never reached Loki, so no alert could be built on top of them.
+  #
+  # IMPORTANT — the promtail user must be in the `adm` group:
+  # /var/log/nginx/*.log is mode 640 owned by www-data, group adm. Without that
+  # membership this job reads zero lines and fails silently.
+  # The playbook task "Add promtail user to adm group" handles it.
+  #
+  # The pipeline stage below turns access-log lines into counters on promtail's
+  # /metrics endpoint (prefix promtail_custom_), which Prometheus then scrapes.
+  # This is the only path to alert on rate-limit events: Prometheus cannot query
+  # Loki, so the logs must first become metrics.
+  #
+  # PITFALL regex: a YAML single-quoted string uses the backslash raw, so write
+  # \S and \d (ONE backslash), not \\S / \\d.
+  #
+  # PITFALL metrics stage: a dynamic value does NOT automatically become a label.
+  # On promtail 2.9 it was proven that `source: status` produces only ONE series
+  # with no dimension, so 200 vs 429 vs 503 cannot be told apart. The pattern
+  # that works is one metric per value, using the `config.value` filter (see
+  # "Counter — Value Filtering" in the docs). Hence the separate counters per
+  # important status class below.
+  - job_name: nginx
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: nginx
+          host: Target-1
+          log_type: access
+          __path__: /var/log/nginx/access.log
+      - targets:
+          - localhost
+        labels:
+          job: nginx
+          host: Target-1
+          log_type: error
+          __path__: /var/log/nginx/error.log
+    pipeline_stages:
+      # Applies only to access-log lines; error-log lines do not match this
+      # pattern and are skipped with no side effect.
+      - regex:
+          expression: '^\S+ - - \[[^\]]+\] "(?P<method>\S+) (?P<path>\S+) [^"]*" (?P<status>\d{3}) (?P<bytes>\d+)'
+      - metrics:
+          # max_idle_duration is extended from the default 5m to 24h.
+          #
+          # Reason: with the 5m default, a counter not updated for 5 minutes is
+          # REMOVED from /metrics. As a result the 429/503 series disappears as
+          # soon as the attack stops, and sum(rate(...[5m])) briefly went NEGATIVE
+          # because Prometheus saw the series vanish and reappear from zero
+          # (treated as a counter reset). 24h keeps the series alive so rate() is
+          # stable and not misleading.
+          #
+          # Rate limit. limit_req_status 429 on the host nginx.
+          nginx_429_total:
+            type: counter
+            description: "nginx 429 Too Many Requests (rate limit) on Target-1"
+            source: status
+            max_idle_duration: 24h
+            config:
+              value: "429"
+              action: inc
+          # limit_conn always replies 503, not 429.
+          nginx_503_total:
+            type: counter
+            description: "nginx 503 (connection limit / upstream) on Target-1"
+            source: status
+            max_idle_duration: 24h
+            config:
+              value: "503"
+              action: inc
+          # Other 5xx to catch upstream failures not caused by limit_conn.
+          nginx_500_total:
+            type: counter
+            description: "nginx 500 on Target-1"
+            source: status
+            max_idle_duration: 24h
+            config:
+              value: "500"
+              action: inc
+          nginx_502_total:
+            type: counter
+            description: "nginx 502 Bad Gateway on Target-1"
+            source: status
+            max_idle_duration: 24h
+            config:
+              value: "502"
+              action: inc
+          nginx_504_total:
+            type: counter
+            description: "nginx 504 Gateway Timeout on Target-1"
+            source: status
+            max_idle_duration: 24h
+            config:
+              value: "504"
+              action: inc
+          # Total access-log lines. Comparison: 429 rising TOGETHER WITH the
+          # total = traffic is rising; 429 rising WITHOUT the total rising = a
+          # caller is attacking.
+          nginx_requests_total:
+            type: counter
+            description: "total recorded nginx requests (Target-1)"
+            max_idle_duration: 24h
+            config:
+              match_all: true
+              action: inc
+          # Real response body byte volume, from the access-log `bytes` field,
+          # NOT count_entry_bytes (which counts the log line length).
+          nginx_response_bytes_total:
+            type: counter
+            description: "total nginx response body bytes (Target-1)"
+            source: bytes
+            max_idle_duration: 24h
+            config:
+              action: add
+              match_all: true

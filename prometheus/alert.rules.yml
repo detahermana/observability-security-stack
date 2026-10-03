@@ -1,0 +1,490 @@
+groups:
+  # ============================================================
+  # VPS alerts (self-hosted server; different priority than the site)
+  # ============================================================
+  # Job "node-exporter" scrapes VPS host metrics + Docker container metrics
+  # (via docker-stats-exporter -> textfile collector). The container metrics
+  # (docker_container_*) here differ from the site because they come from a
+  # different exporter — see the vps-container-alerts group below.
+  # Scope=vps-* routes to a separate Telegram channel (TELEGRAM_CHAT_ID_VPS).
+  # ============================================================
+
+  - name: vps-host-alerts
+    rules:
+      - alert: VpsHostDown
+        expr: up{job="node-exporter"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          scope: vps-host
+        annotations:
+          summary: "VPS monitoring is not responding"
+          description: "VPS node-exporter unreachable for 1 minute — the VPS is probably down or the monitoring docker stack restarted."
+
+      - alert: VpsHostHighCpu
+        expr: 100 - (avg by (instance) (rate(node_cpu_seconds_total{job="node-exporter", mode="idle"}[5m])) * 100) > 85
+        for: 5m
+        labels:
+          severity: warning
+          scope: vps-host
+        annotations:
+          summary: "VPS CPU high"
+          description: "VPS CPU {{ printf \"%.1f\" $value }}% (>85% for 5 minutes)."
+
+      - alert: VpsHostHighMemory
+        expr: (1 - (node_memory_MemAvailable_bytes{job="node-exporter"} / node_memory_MemTotal_bytes{job="node-exporter"})) * 100 > 90
+        for: 5m
+        labels:
+          severity: warning
+          scope: vps-host
+        annotations:
+          summary: "VPS memory high"
+          description: "VPS memory {{ printf \"%.1f\" $value }}% (>90% for 5 minutes)."
+
+      - alert: VpsHostLowDisk
+        expr: (node_filesystem_avail_bytes{job="node-exporter", mountpoint="/"} / node_filesystem_size_bytes{job="node-exporter", mountpoint="/"}) * 100 < 15
+        for: 10m
+        labels:
+          severity: critical
+          scope: vps-host
+        annotations:
+          summary: "VPS disk almost full"
+          description: "VPS disk remaining < 15% ({{ printf \"%.1f\" $value }}% left)."
+
+  # VPS container alerts — use metrics from docker-stats-exporter
+  # (not the site textfile collector, so the metric names differ).
+  # docker-stats-exporter exposes: cpu_usage_seconds_total, memory_usage_bytes,
+  # memory_limit_bytes, network_*, last_seen_timestamp_seconds.
+  - name: vps-container-alerts
+    rules:
+      # Container heartbeat missing > 180 seconds = down. More reliable than the
+      # plain scrape interval. The 180s threshold (not 60s) gives buffer for
+      # docker-stats-exporter, which has to query 16+ containers via the Docker
+      # stats API — a single round-trip can take 30-60s, so a 60s threshold was
+      # too tight and produced frequent false positives.
+      - alert: VpsContainerDown
+        expr: time() - docker_container_last_seen_timestamp_seconds{job="node-exporter", name=~".+"} > 180
+        for: 1m
+        labels:
+          severity: critical
+          scope: vps-container
+        annotations:
+          summary: "VPS container not seen: {{ $labels.name }}"
+          description: "Container {{ $labels.name }} (image {{ $labels.image }}) has not sent metrics for 180 seconds — probably crashed or restarted."
+
+      # CPU usage 5m avg > 85%.
+      - alert: VpsContainerHighCpu
+        expr: sum(rate(docker_container_cpu_usage_seconds_total{job="node-exporter", name=~".+"}[5m])) by (name) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+          scope: vps-container
+        annotations:
+          summary: "High CPU in VPS container {{ $labels.name }}"
+          description: "CPU {{ printf \"%.1f\" $value }}% (>85% for 5 minutes) in container {{ $labels.name }}."
+
+      # Memory usage > 90% of limit. Only for containers with limit > 0.
+      #
+      # `for: 15m` (raised from 5m). Reason: wazuh-manager regularly spikes above
+      # 90% each time `wazuh-modulesd` runs the vulnerability-feed update —
+      # observed every 10-30 minutes, and the spike lasts >5 minutes so it
+      # triggered the alert repeatedly. The manager's own memory is stable at
+      # ~30% outside those periods.
+      #
+      # 15m separates a normal spike from a real memory leak: if memory is truly
+      # leaking, the >90% condition will last far longer and still be detected.
+      # The threshold stays at 90% so nothing is hidden.
+      - alert: VpsContainerHighMemory
+        expr: docker_container_memory_usage_bytes{job="node-exporter", name=~".+"} / docker_container_memory_limit_bytes{job="node-exporter", name=~".+"} * 100 > 90 and docker_container_memory_limit_bytes{job="node-exporter", name=~".+"} > 0
+        for: 15m
+        labels:
+          severity: warning
+          scope: vps-container
+        annotations:
+          summary: "High memory in VPS container {{ $labels.name }}"
+          description: "Memory {{ printf \"%.1f\" $value }}% (>90% of limit, sustained >15 minutes) in container {{ $labels.name }}."
+
+  # ============================================================
+  # site alerts (remote-site servers + target-1/target-2 VMs + Proxmox)
+  # ============================================================
+  # Job "site-node-exporter" scrapes 192.0.2.2/.7/.8 (host + Docker via the
+  # textfile script). Job "site-pve-exporter" scrapes the Proxmox API at
+  # 192.0.2.2:9221.
+  # Scope=site-* routes to a separate Telegram channel (TELEGRAM_CHAT_ID_SITE).
+  # ============================================================
+
+  - name: site-host-alerts
+    rules:
+      - alert: SiteHostDown
+        expr: up{job="site-node-exporter"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          scope: site-host
+        annotations:
+          summary: "Site server not responding ({{ $labels.instance }})"
+          description: "node-exporter at {{ $labels.instance }} unreachable for 2 minutes. Check whether the host is down or the site network is cut."
+
+      - alert: SiteHostHighCpu
+        expr: 100 - (avg by (instance) (rate(node_cpu_seconds_total{job="site-node-exporter", mode="idle"}[5m])) * 100) > 85
+        for: 5m
+        labels:
+          severity: warning
+          scope: site-host
+        annotations:
+          summary: "High CPU at {{ $labels.instance }}"
+          description: "CPU usage {{ printf \"%.1f\" $value }}% for 5 minutes on a site server."
+
+      # High CPU steal time = a VM contending for CPU with other VMs on the
+      # Proxmox host (or an abusive neighbor workload). The 10% threshold is
+      # conservative so the alert only fires in abnormal situations.
+      - alert: SiteHostStealHigh
+        expr: avg by (instance) (rate(node_cpu_seconds_total{job="site-node-exporter", mode="steal"}[5m])) * 100 > 10
+        for: 10m
+        labels:
+          severity: warning
+          scope: site-host
+        annotations:
+          summary: "High CPU steal at {{ $labels.instance }}"
+          description: "Steal time {{ printf \"%.1f\" $value }}% (>10% for 10 minutes) — indicates a VM contending for CPU on the Proxmox host or abnormal activity."
+
+      - alert: SiteHostHighMemory
+        expr: (1 - (node_memory_MemAvailable_bytes{job="site-node-exporter"} / node_memory_MemTotal_bytes{job="site-node-exporter"})) * 100 > 90
+        for: 5m
+        labels:
+          severity: warning
+          scope: site-host
+        annotations:
+          summary: "High memory at {{ $labels.instance }}"
+          description: "RAM usage {{ printf \"%.1f\" $value }}% of total on a site server."
+
+      # SiteHostLowDisk scans all real filesystems (see the mountpoint table on
+      # the dashboard). More comprehensive: catches a full /var, full /tmp, etc.
+      - alert: SiteHostLowDisk
+        expr: (node_filesystem_avail_bytes{job="site-node-exporter", mountpoint=~"^/($|boot($|/efi)?|home|var($|/log)?|tmp|opt|srv|data|storage)"} / node_filesystem_size_bytes{job="site-node-exporter", mountpoint=~"^/($|boot($|/efi)?|home|var($|/log)?|tmp|opt|srv|data|storage)"}) * 100 < 15
+        for: 10m
+        labels:
+          severity: critical
+          scope: site-host
+        annotations:
+          summary: "Site server disk almost full: {{ $labels.mountpoint }} ({{ $labels.instance }})"
+          description: "Disk remaining < 15% ({{ printf \"%.1f\" $value }}% left) on mountpoint {{ $labels.mountpoint }} at {{ $labels.instance }}."
+
+      # Network traffic anomaly: outbound > 50 Mbps sustained 10m. Catches
+      # exfiltration, outbound DDoS, or mining-pool traffic.
+      # Bytes/s * 8 = bits/s, /1e6 = Mbps. The computation is done in PromQL so
+      # the description template only needs {{ printf "%.1f" $value }} with no
+      # division in the Go template (which previously caused a parse error).
+      - alert: SiteHostOutboundHigh
+        expr: sum by (instance) (rate(node_network_transmit_bytes_total{job="site-node-exporter", device!~"lo|veth.+|docker.+|br-.+"}[5m])) * 8 / 1000000 > 50
+        for: 10m
+        labels:
+          severity: warning
+          scope: site-host
+        annotations:
+          summary: "High outbound traffic at {{ $labels.instance }}"
+          description: "Outbound {{ printf \"%.1f\" $value }} Mbps (>50 Mbps sustained 10m) — check for exfiltration/DDoS/mining-pool traffic."
+
+  - name: site-container-alerts
+    rules:
+      # Metrics from docker-textfile.sh (see ansible/files/docker-textfile.sh).
+      # job="site-node-exporter" filter ISOLATES from VPS containers.
+      # Does NOT overlap with VpsContainerDown because the metric names differ:
+      # the site uses docker_container_up (textfile), the VPS uses
+      # docker_container_last_seen_timestamp_seconds (docker-stats-exporter).
+      - alert: SiteContainerDown
+        expr: docker_container_up{job="site-node-exporter"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          scope: site-container
+        annotations:
+          summary: "Site container down: {{ $labels.container }} at {{ $labels.host }}"
+          description: "Container {{ $labels.container }} (image {{ $labels.image }}) at {{ $labels.host }} reported down for 2 minutes. Check `docker ps -a` on {{ $labels.host }}."
+
+      # Container restart detected: restart_count increase over the last hour > 0.
+      - alert: SiteContainerRestartDetected
+        expr: increase(docker_container_restart_count{job="site-node-exporter"}[1h]) > 0
+        for: 0m
+        labels:
+          severity: warning
+          scope: site-container
+        annotations:
+          summary: "Site container restarted {{ $value }}x in 1 hour ({{ $labels.container }} at {{ $labels.host }})"
+          description: "Container {{ $labels.container }} (image {{ $labels.image }}) at {{ $labels.host }} restarted {{ $value }}x in the last hour. Check the log: `docker logs --tail 100 {{ $labels.container }}` on {{ $labels.host }}."
+
+      # Container healthcheck unhealthy. Only fires for containers with a
+      # HEALTHCHECK in the Dockerfile/compose (no-healthcheck has status=0, skipped).
+      - alert: SiteContainerUnhealthy
+        expr: docker_container_health_status{job="site-node-exporter"} == 3
+        for: 3m
+        labels:
+          severity: critical
+          scope: site-container
+        annotations:
+          summary: "Site container healthcheck FAILED: {{ $labels.container }} at {{ $labels.host }}"
+          description: "Docker healthcheck reported unhealthy for {{ $labels.container }} (image {{ $labels.image }}) at {{ $labels.host }}. Check `docker inspect --format '{{.State.Health}}' {{ $labels.container }}`."
+
+  - name: site-backup-alerts
+    rules:
+      # ============================================================
+      # PBS backup (Proxmox Backup Server) — remote site
+      # ============================================================
+      # Metrics from ansible/files/pbs-backup-monitor.sh (systemd timer every 5
+      # minutes on pve2), scraped via the "site-node-exporter" job targeting .3:9100.
+      #
+      # Why a separate scope (not site-*): backup is a different function from
+      # application availability. If backup dies, the application keeps running
+      # normally — so the operator needs to be told through a path that
+      # distinguishes "service is safe" from "the safety net is gone".
+      # ============================================================
+
+      # The monitoring script itself failed to query PBS. This is the most basic
+      # alert: if it fires, the other metrics cannot be trusted (they may be
+      # false zeros because the script failed, not because the data is truly 0).
+      - alert: SiteBackupMonitorDown
+        expr: pbs_monitor_up{job="site-node-exporter"} == 0
+        for: 15m
+        labels:
+          severity: warning
+          scope: site-backup
+        annotations:
+          summary: "Backup monitoring script failed to query PBS"
+          description: "pbs-backup-monitor.sh at {{ $labels.host }} failed to query the PBS API for 15 minutes. Possible: invalid token, PBS down, or the network to 192.0.2.4 is cut. Other backup metrics cannot be trusted during this time."
+
+      # The monitoring timer stopped (e.g. the systemd timer was disabled or the
+      # script crashed and did not recover). Detection: last_run more than 15
+      # minutes ago, while the timer interval is 5 minutes.
+      - alert: SiteBackupMonitorStale
+        expr: time() - pbs_monitor_last_run_timestamp{job="site-node-exporter"} > 900
+        for: 5m
+        labels:
+          severity: warning
+          scope: site-backup
+        annotations:
+          summary: "Backup monitoring timer is not running"
+          description: "The pbs_monitor_last_run_timestamp metric at {{ $labels.host }} has not updated for over 15 minutes (timer interval is 5 minutes). Check `systemctl status pbs-backup-monitor.timer` on {{ $labels.host }}."
+
+      # No successful backup for over 26 hours despite a daily schedule at 23:00.
+      # The 26h buffer = 23:00 + 3 hours tolerance, so a long backup (a 50 GB VM
+      # can take 1-2 hours) does not false-positive.
+      #
+      # NOTE: this alert needs pbs_backup_last_success_timestamp > 0.
+      # When the datastore is empty (no backup yet), its value is 0 and
+      # `time() - 0` = ~1.7 billion seconds, which would trigger a false alert.
+      # Hence the additional `> 0` condition.
+      - alert: SiteBackupOverdue
+        expr: |
+          pbs_backup_last_success_timestamp{job="site-node-exporter"} > 0
+          and
+          (time() - pbs_backup_last_success_timestamp{job="site-node-exporter"}) / 3600 > 26
+        for: 10m
+        labels:
+          severity: critical
+          scope: site-backup
+        annotations:
+          summary: "Backup has not run for > 26 hours"
+          description: "Last successful backup {{ printf \"%.1f\" $value }} hours ago in datastore {{ $labels.datastore }}. The 23:00 daily schedule should have run. Check the backup task in the Proxmox node (Datacenter > Backup) and the vzdump log."
+
+      # No backup has ever been taken, despite the system running for more than a
+      # day. This catches the "job created but never succeeded" scenario — the
+      # most dangerous condition because it looks calm.
+      - alert: SiteBackupNeverSucceeded
+        expr: |
+          pbs_backup_last_success_timestamp{job="site-node-exporter"} == 0
+          and
+          (time() - pbs_monitor_last_run_timestamp{job="site-node-exporter"}) > 86400
+        for: 30m
+        labels:
+          severity: critical
+          scope: site-backup
+        annotations:
+          summary: "No backup has ever been stored in PBS"
+          description: "Datastore {{ $labels.datastore }} is still empty (0 snapshots) even though monitoring has run for > 1 day. Check whether the backup job actually runs and can write to PBS."
+
+      # PBS datastore almost full. Backup will fail once the disk is full, and by
+      # then it is too late. Threshold 85%.
+      - alert: SiteBackupDatastoreHigh
+        expr: |
+          (pbs_datastore_used_bytes{job="site-node-exporter"} / pbs_datastore_size_bytes{job="site-node-exporter"}) * 100 > 85
+        for: 15m
+        labels:
+          severity: warning
+          scope: site-backup
+        annotations:
+          summary: "PBS datastore almost full"
+          description: "Datastore {{ $labels.datastore }} at {{ $labels.host }} is {{ printf \"%.1f\" $value }}% used. Reduce retention or add capacity before the next backup fails."
+
+      # PBS datastore critical (95%). At this point the next backup is very
+      # likely to fail midway.
+      - alert: SiteBackupDatastoreCritical
+        expr: |
+          (pbs_datastore_used_bytes{job="site-node-exporter"} / pbs_datastore_size_bytes{job="site-node-exporter"}) * 100 > 95
+        for: 5m
+        labels:
+          severity: critical
+          scope: site-backup
+        annotations:
+          summary: "PBS datastore CRITICAL (>95%)"
+          description: "Datastore {{ $labels.datastore }} at {{ $labels.host }} is {{ printf \"%.1f\" $value }}% used. The next backup will fail. Immediate action: delete old snapshots or add capacity."
+
+      # A VM that should be backed up has no snapshot at all. Catches a VM
+      # removed from the job, or a new VM added but not included in the backup list.
+      - alert: SiteBackupVmMissing
+        expr: |
+          absent(pbs_backup_vm_last_timestamp{job="site-node-exporter", vmid="100"})
+          or
+          (time() - pbs_backup_vm_last_timestamp{job="site-node-exporter", vmid="100"}) > 93600
+        for: 10m
+        labels:
+          severity: critical
+          scope: site-backup
+        annotations:
+          summary: "VM 100 (Target-1) has no recent backup"
+          description: "No snapshot of VM 100 (Target-1) in the last 26 hours in the PBS datastore. The reporting application is running without backup protection."
+
+      - alert: SiteBackupVmMissing
+        expr: |
+          absent(pbs_backup_vm_last_timestamp{job="site-node-exporter", vmid="101"})
+          or
+          (time() - pbs_backup_vm_last_timestamp{job="site-node-exporter", vmid="101"}) > 93600
+        for: 10m
+        labels:
+          severity: critical
+          scope: site-backup
+        annotations:
+          summary: "VM 101 (Target-2) has no recent backup"
+          description: "No snapshot of VM 101 (Target-2) in the last 26 hours in the PBS datastore. The assessment application is running without backup protection."
+
+  - name: site-proxmox-alerts
+    rules:
+      - alert: SitePveExporterDown
+        expr: up{job="site-pve-exporter"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          scope: site-proxmox
+        annotations:
+          summary: "site pve-exporter is not responding"
+          description: "pve-exporter on the site Proxmox is unreachable — VM/storage status cannot be monitored. Check the service at 192.0.2.2:9221."
+
+      # VM stopped -- qemu/ jobs from pve-exporter, id pattern qemu/<vmid>
+      - alert: SiteVMNotRunning
+        expr: pve_up{job="site-pve-exporter", id=~"qemu/.+"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          scope: site-vm
+        annotations:
+          summary: "Site VM not running: {{ $labels.name }}"
+          description: "VM {{ $labels.id }} ({{ $labels.name }}) on the site Proxmox reported stopped. target-1/target-2 may be affected."
+
+      - alert: SiteVMHighCpu
+        expr: pve_cpu_usage_ratio{job="site-pve-exporter", id=~"qemu/.+"} * 100 > 85
+        for: 10m
+        labels:
+          severity: warning
+          scope: site-vm
+        annotations:
+          summary: "High CPU on site VM {{ $labels.name }}"
+          description: "VM CPU {{ printf \"%.1f\" $value }}% (>85% for 10 minutes) — extend the time or check whether a suspicious process is running."
+
+      - alert: SiteStorageHigh
+        expr: (pve_disk_usage_bytes{job="site-pve-exporter", id=~"storage/.+"} / pve_disk_size_bytes{job="site-pve-exporter", id=~"storage/.+"}) * 100 > 85
+        for: 10m
+        labels:
+          severity: warning
+          scope: site-proxmox
+        annotations:
+          summary: "Site Proxmox storage almost full: {{ $labels.id }}"
+          description: "Storage {{ $labels.id }} on the site Proxmox is {{ printf \"%.1f\" $value }}% used (>85%)."
+
+  # ============================================================
+  # Security / HTTP rate limit alerts (Target-1 host nginx).
+  #
+  # Metric source: the `metrics` stage of the promtail pipeline on Target-1,
+  # scraped via the "site-promtail" job. The underlying metrics are named
+  # promtail_custom_nginx_429_total and promtail_custom_nginx_503_total.
+  #
+  # IMPORTANT about the nature of these metrics:
+  #   - They only appear after the event happens. If no 429 has occurred since
+  #     promtail last restarted, the series does not exist at all (not zero).
+  #     The expression therefore uses rate(), which tolerates a missing series,
+  #     and the alerts must not use an absolute comparison.
+  #   - Counters reset to zero on every promtail restart. rate()/increase()
+  #     handles this; absolute values do not.
+  # ============================================================
+  - name: site-security-alerts
+    rules:
+      # The rate limit is holding traffic back. limit_req_status 429 on the perip
+      # zone at 20r/s with burst=40 nodelay. A spike means a caller exceeded the
+      # burst — a scanner, or one IP behind NAT loading too aggressively.
+      - alert: SiteRateLimitTriggered
+        expr: sum(rate(promtail_custom_nginx_429_total{job="site-promtail"}[5m])) * 60 > 30
+        for: 5m
+        labels:
+          severity: warning
+          scope: site-security
+        annotations:
+          summary: "Target-1 rate limit is holding traffic back"
+          description: "Average {{ printf \"%.1f\" $value }} 429 responses per minute over 5 minutes. The rate limit (X r/s, burst=Y) is holding a caller back. Check the source IP in Grafana. If this is legitimate traffic from one network behind NAT, loosen the burst."
+
+      # A large number of 429s = likely an attack or a misconfigured caller.
+      # Severity critical because it can indicate malicious traffic, and if the
+      # source is a legitimate network then the application is unusable.
+      - alert: SiteRateLimitHeavy
+        expr: sum(rate(promtail_custom_nginx_429_total{job="site-promtail"}[5m])) * 60 > 300
+        for: 2m
+        labels:
+          severity: critical
+          scope: site-security
+        annotations:
+          summary: "Target-1 rate limit is holding back a large amount of traffic"
+          description: "Average {{ printf \"%.1f\" $value }} 429 responses per minute. This is far above a normal spike. Check whether this is an attack or a single site subnet sharing one NAT quota."
+
+      # limit_conn ALWAYS replies 503 (not 429). A rise in 503 means parallel
+      # connections per IP exceeded connperip 30.
+      - alert: SiteConnectionLimitTriggered
+        expr: sum(rate(promtail_custom_nginx_503_total{job="site-promtail"}[5m])) * 60 > 20
+        for: 5m
+        labels:
+          severity: warning
+          scope: site-security
+        annotations:
+          summary: "Target-1 connection limit active (503)"
+          description: "Average {{ printf \"%.1f\" $value }} 503 responses per minute over 5 minutes. limit_conn connperip 30 is holding back parallel connections. Note: 503 can also mean a broken upstream, so check the target-1-app container when this alert fires."
+
+      # Promtail itself is unreachable. If it dies, the whole security-metric path
+      # dies silently — including shipping nginx logs to Loki.
+      - alert: SitePromtailDown
+        expr: up{job="site-promtail"} == 0
+        for: 3m
+        labels:
+          severity: critical
+          scope: site-monitoring
+        annotations:
+          summary: "Site promtail is not responding: {{ $labels.instance }}"
+          description: "Promtail at {{ $labels.instance }} unreachable for 3 minutes. nginx logs and rate-limit metrics from this host are not reaching Loki/Prometheus. Check the promtail service and the adm group membership."
+
+      # Early detection of promtail failing to read the nginx log (e.g. adm-group
+      # permission lost after a VM rebuild).
+      #
+      # PITFALL found during verification: `rate(...[15m]) == 0` alone produced a
+      # FALSE POSITIVE every time promtail restarted. The promtail_custom_*
+      # counters reset to zero on restart, and rate() over a 15m window needs time
+      # to fill back up — during that window the value is 0 even though nothing is
+      # wrong. The condition is therefore tightened: it only fires when promtail
+      # has been up a long time (>= 20 minutes, so the 15m window is fully
+      # populated) AND it is reading truly zero lines.
+      - alert: SiteNginxLogShippingStalled
+        expr: |
+          sum by (instance) (rate(promtail_custom_nginx_requests_total{job="site-promtail"}[15m])) == 0
+          and on(instance) (time() - process_start_time_seconds{job="site-promtail"} > 1200)
+          and on(instance) up{job="site-promtail"} == 1
+        for: 15m
+        labels:
+          severity: warning
+          scope: site-monitoring
+        annotations:
+          summary: "nginx log not being read by promtail: {{ $labels.instance }}"
+          description: "No access-log lines have been read by promtail at {{ $labels.instance }} for 15 minutes even though promtail has been up >20 minutes. Likely the /var/log/nginx permission (adm group) was lost, or the application simply received no traffic at all."

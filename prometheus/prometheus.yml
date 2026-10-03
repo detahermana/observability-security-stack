@@ -1,0 +1,71 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+alerting:
+  alertmanagers:
+    - static_configs:
+      - targets: ["alertmanager:9093"]
+
+rule_files:
+  - "/etc/prometheus/alert.rules.yml"
+
+scrape_configs:
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: "node-exporter"
+    static_configs:
+      - targets: ["node-exporter:9100"]
+
+  # Node exporter on the site. pve2 and pbs were added when the PBS (Proxmox
+  # Backup Server) was deployed as a VM on pve2. Those two hosts share the same
+  # job because their metrics are identical (host resource metrics); a host
+  # label is added so they can be told apart on the dashboard.
+  #
+  # pve2 also runs pbs-backup-monitor.sh (a systemd timer every 5 minutes) that
+  # writes pbs_* metrics to the textfile collector — so PBS backup status is
+  # scraped through this same job.
+  - job_name: "site-node-exporter"
+    static_configs:
+      - targets:
+        - "192.0.2.2:9100"   # pve1 (proxmox host, target-1 + target-2 VMs)
+        - "192.0.2.8:9100"   # target-1 (VM1)
+        - "192.0.2.7:9100"   # target-2 (VM2)
+        - "192.0.2.3:9100"   # pve2 (second proxmox host + PBS VM + backup monitor)
+        - "192.0.2.4:9100"   # pbs (Proxmox Backup Server)
+        labels:
+          location: "site"
+
+  - job_name: "site-pve-exporter"
+    static_configs:
+      - targets:
+        - "192.0.2.2"        # proxmox node to query
+    metrics_path: /pve
+    params:
+      module: [default]
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: "192.0.2.2:9221"   # the pve-exporter itself
+
+  # Promtail on the site VMs, to read metrics produced by the `metrics` stage of
+  # the nginx log pipeline (prefix promtail_custom_). This is the only path that
+  # lets rate-limit events be alerted: Prometheus cannot query Loki, so 429/503
+  # counts must first appear as metrics.
+  #
+  # Metrics from this stage exist only on promtail's /metrics endpoint and are
+  # transient — if promtail restarts, all counters reset to zero. The alerts
+  # below therefore use rate()/increase(), not absolute values.
+  - job_name: "site-promtail"
+    static_configs:
+      - targets:
+        - "192.0.2.8:9080"   # target-1
+        - "192.0.2.7:9080"   # target-2
+        labels:
+          location: "site"
+    metrics_path: /metrics

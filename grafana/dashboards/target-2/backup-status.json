@@ -1,0 +1,1364 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "uid": "site-backup",
+  "title": "Site Backup",
+  "description": "Monitoring Proxmox Backup Server — status backup VM Target-1 (100) dan Target-2 (101). Sumber metrik: pbs-backup-monitor.sh di pve2, via textfile collector.",
+  "tags": [
+    "target-2",
+    "backup",
+    "pbs"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 0,
+  "refresh": "1m",
+  "time": {
+    "from": "now-7d",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "instance",
+        "label": "Host",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(pbs_monitor_up{job=\"site-node-exporter\"}, instance)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".+",
+        "current": {}
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 100,
+      "type": "row",
+      "title": "Backup Status Summary",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 1
+      }
+    },
+    {
+      "id": 101,
+      "type": "stat",
+      "title": "Last Backup Age",
+      "description": "Seconds since the last successful backup. Green < 24h, yellow > 24h, red > 26h (the daily 23:00 schedule should already have run).",
+      "datasource": "Prometheus",
+      "gridPos": {
+        "x": 0,
+        "y": 1,
+        "w": 6,
+        "h": 5
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "time() - pbs_backup_last_success_timestamp{job=\"site-node-exporter\"}",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "orientation": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#F2495C",
+                "value": null
+              },
+              {
+                "color": "#73BF69",
+                "value": 0
+              },
+              {
+                "color": "#FF9830",
+                "value": 86400
+              },
+              {
+                "color": "#F2495C",
+                "value": 93600
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 102,
+      "type": "stat",
+      "title": "Monitoring Status",
+      "description": "1 = the monitoring script successfully queried the PBS API. 0 = query failed (invalid token / PBS down / network cut) — every other metric is untrustworthy.",
+      "datasource": "Prometheus",
+      "gridPos": {
+        "x": 6,
+        "y": 1,
+        "w": 4,
+        "h": 5
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "pbs_monitor_up{job=\"site-node-exporter\"}",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "orientation": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#F2495C",
+                "value": null
+              },
+              {
+                "color": "#F2495C",
+                "value": 0
+              },
+              {
+                "color": "#73BF69",
+                "value": 1
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 103,
+      "type": "stat",
+      "title": "Snapshot Count",
+      "description": "Total snapshots stored in the datastore. With VM 100 + 101 and 7 daily retention, a healthy value is around 14-30. 0 = no backup has ever been taken.",
+      "datasource": "Prometheus",
+      "gridPos": {
+        "x": 10,
+        "y": 1,
+        "w": 4,
+        "h": 5
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "pbs_backup_snapshot_count{job=\"site-node-exporter\"}",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "orientation": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#F2495C",
+                "value": null
+              },
+              {
+                "color": "#F2495C",
+                "value": 0
+              },
+              {
+                "color": "#73BF69",
+                "value": 2
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 104,
+      "type": "stat",
+      "title": "Datastore Used Capacity",
+      "description": "Percentage of the PBS datastore used. Alert warning > 85%, critical > 95%. Backup will fail once it is full.",
+      "datasource": "Prometheus",
+      "gridPos": {
+        "x": 14,
+        "y": 1,
+        "w": 5,
+        "h": 5
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "(pbs_datastore_used_bytes{job=\"site-node-exporter\"} / pbs_datastore_size_bytes{job=\"site-node-exporter\"}) * 100",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "orientation": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#73BF69",
+                "value": null
+              },
+              {
+                "color": "#FF9830",
+                "value": 70
+              },
+              {
+                "color": "#F2495C",
+                "value": 85
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 1
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 105,
+      "type": "stat",
+      "title": "Free Capacity",
+      "description": "Free space in the PBS datastore. Yellow < 50 GB, green > 100 GB.",
+      "datasource": "Prometheus",
+      "gridPos": {
+        "x": 19,
+        "y": 1,
+        "w": 5,
+        "h": 5
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "pbs_datastore_avail_bytes{job=\"site-node-exporter\"}",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "orientation": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#F2495C",
+                "value": null
+              },
+              {
+                "color": "#F2495C",
+                "value": 0
+              },
+              {
+                "color": "#FF9830",
+                "value": 53687091200
+              },
+              {
+                "color": "#73BF69",
+                "value": 107374182400
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 200,
+      "type": "row",
+      "title": "Backup per VM",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 6,
+        "w": 24,
+        "h": 1
+      }
+    },
+    {
+      "id": 201,
+      "type": "stat",
+      "title": "VM 100 (Target-1) — Backup Age",
+      "description": "Age of the last backup of VM 100 (Target-1). If this is red, the application is running without backup protection.",
+      "datasource": "Prometheus",
+      "gridPos": {
+        "x": 0,
+        "y": 7,
+        "w": 6,
+        "h": 5
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "time() - pbs_backup_vm_last_timestamp{job=\"site-node-exporter\", vmid=\"100\"}",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "orientation": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#F2495C",
+                "value": null
+              },
+              {
+                "color": "#73BF69",
+                "value": 0
+              },
+              {
+                "color": "#FF9830",
+                "value": 86400
+              },
+              {
+                "color": "#F2495C",
+                "value": 93600
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 202,
+      "type": "stat",
+      "title": "VM 101 (Target-2) — Backup Age",
+      "description": "Age of the last backup of VM 101 (Target-2). If this is red, the application is running without backup protection.",
+      "datasource": "Prometheus",
+      "gridPos": {
+        "x": 6,
+        "y": 7,
+        "w": 6,
+        "h": 5
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "time() - pbs_backup_vm_last_timestamp{job=\"site-node-exporter\", vmid=\"101\"}",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "orientation": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#F2495C",
+                "value": null
+              },
+              {
+                "color": "#73BF69",
+                "value": 0
+              },
+              {
+                "color": "#FF9830",
+                "value": 86400
+              },
+              {
+                "color": "#F2495C",
+                "value": 93600
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 203,
+      "type": "timeseries",
+      "title": "Snapshot Count per VM",
+      "description": "Snapshots stored per VM. A rising curve = retention is working. A flat line that then drops = a snapshot was pruned (normal). A disappearing line = the VM fell off the backup list.",
+      "datasource": "Prometheus",
+      "gridPos": {
+        "x": 12,
+        "y": 7,
+        "w": 12,
+        "h": 5
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "pbs_backup_vm_snapshot_count{job=\"site-node-exporter\"}",
+          "legendFormat": "{{vmid}} ({{type}})",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "custom": {
+            "fillOpacity": 20,
+            "lineWidth": 2
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 300,
+      "type": "row",
+      "title": "Trend & Capacity",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 24,
+        "h": 1
+      }
+    },
+    {
+      "id": 301,
+      "type": "timeseries",
+      "title": "PBS Datastore Usage",
+      "description": "Datastore growth over time. If the 'used' line keeps rising without dropping, retention (prune) is not running and the disk will fill.",
+      "datasource": "Prometheus",
+      "gridPos": {
+        "x": 0,
+        "y": 13,
+        "w": 12,
+        "h": 7
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "pbs_datastore_used_bytes{job=\"site-node-exporter\"}",
+          "legendFormat": "Terpakai",
+          "refId": "A"
+        },
+        {
+          "datasource": "Prometheus",
+          "expr": "pbs_datastore_avail_bytes{job=\"site-node-exporter\"}",
+          "legendFormat": "Tersisa",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "fillOpacity": 10,
+            "lineWidth": 2
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 302,
+      "type": "timeseries",
+      "title": "Last Backup Duration",
+      "description": "How long the last backup ran. A sudden increase can mean a VM grew larger or PBS slowed down (I/O).",
+      "datasource": "Prometheus",
+      "gridPos": {
+        "x": 12,
+        "y": 13,
+        "w": 6,
+        "h": 7
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "pbs_backup_last_duration_seconds{job=\"site-node-exporter\"}",
+          "legendFormat": "{{datastore}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "fillOpacity": 10,
+            "lineWidth": 2
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 303,
+      "type": "timeseries",
+      "title": "Last Backup Size",
+      "description": "Total size of the last backup file. If it drops sharply, suspect an incomplete backup (VM skipped / disk failure).",
+      "datasource": "Prometheus",
+      "gridPos": {
+        "x": 18,
+        "y": 13,
+        "w": 6,
+        "h": 7
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "pbs_backup_last_size_bytes{job=\"site-node-exporter\"}",
+          "legendFormat": "{{datastore}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "fillOpacity": 10,
+            "lineWidth": 2
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 400,
+      "type": "row",
+      "title": "PBS & pve2 Host Resources",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 20,
+        "w": 24,
+        "h": 1
+      }
+    },
+    {
+      "id": 401,
+      "type": "gauge",
+      "title": "pve2 CPU",
+      "description": "pve2 CPU usage (5-minute average). pve2 runs the PBS VM (2 vCPU) — a rise during backup is normal. Green <70%, yellow 70-85%, red >85%.",
+      "datasource": "Prometheus",
+      "gridPos": {
+        "x": 0,
+        "y": 21,
+        "w": 6,
+        "h": 6
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "100 - (avg by (instance) (rate(node_cpu_seconds_total{job=\"site-node-exporter\", instance=\"192.0.2.3:9100\", mode=\"idle\"}[5m])) * 100)",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "decimals": 1,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#73BF69",
+                "value": null
+              },
+              {
+                "color": "#FF9830",
+                "value": 70
+              },
+              {
+                "color": "#F2495C",
+                "value": 85
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 402,
+      "type": "gauge",
+      "title": "PBS CPU",
+      "description": "CPU usage inside the PBS VM (5-minute average). High during backup/dedup is expected. If it stays high with no backup running, suspect another process.",
+      "datasource": "Prometheus",
+      "gridPos": {
+        "x": 6,
+        "y": 21,
+        "w": 6,
+        "h": 6
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "100 - (avg by (instance) (rate(node_cpu_seconds_total{job=\"site-node-exporter\", instance=\"192.0.2.4:9100\", mode=\"idle\"}[5m])) * 100)",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "decimals": 1,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#73BF69",
+                "value": null
+              },
+              {
+                "color": "#FF9830",
+                "value": 70
+              },
+              {
+                "color": "#F2495C",
+                "value": 85
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 403,
+      "type": "gauge",
+      "title": "Datastore Capacity",
+      "description": "Percentage of the PBS datastore used. This is the most important metric on this dashboard — if it fills, backup fails. Alert warning >85%, critical >95%.",
+      "datasource": "Prometheus",
+      "gridPos": {
+        "x": 12,
+        "y": 21,
+        "w": 6,
+        "h": 6
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "(pbs_datastore_used_bytes{job=\"site-node-exporter\"} / pbs_datastore_size_bytes{job=\"site-node-exporter\"}) * 100",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "decimals": 1,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#73BF69",
+                "value": null
+              },
+              {
+                "color": "#FF9830",
+                "value": 70
+              },
+              {
+                "color": "#F2495C",
+                "value": 85
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 404,
+      "type": "stat",
+      "title": "Recent Snapshots",
+      "description": "Total snapshots stored. With VM 100+101 and 7 daily retention, a healthy value is around 14-30. 0 = no backup has ever been taken.",
+      "datasource": "Prometheus",
+      "gridPos": {
+        "x": 18,
+        "y": 21,
+        "w": 6,
+        "h": 6
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "pbs_backup_snapshot_count{job=\"site-node-exporter\"}",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "orientation": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#F2495C",
+                "value": null
+              },
+              {
+                "color": "#F2495C",
+                "value": 0
+              },
+              {
+                "color": "#73BF69",
+                "value": 2
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 405,
+      "type": "gauge",
+      "title": "pve2 Memory",
+      "description": "pve2 memory usage. IMPORTANT: pve2 has only 7 GB. In the DR scenario (production VM running on pve2), stop the PBS VM first to avoid overcommitment.",
+      "datasource": "Prometheus",
+      "gridPos": {
+        "x": 0,
+        "y": 27,
+        "w": 6,
+        "h": 6
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "(1 - (node_memory_MemAvailable_bytes{job=\"site-node-exporter\", instance=\"192.0.2.3:9100\"} / node_memory_MemTotal_bytes{job=\"site-node-exporter\", instance=\"192.0.2.3:9100\"})) * 100",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "decimals": 1,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#73BF69",
+                "value": null
+              },
+              {
+                "color": "#FF9830",
+                "value": 70
+              },
+              {
+                "color": "#F2495C",
+                "value": 85
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 406,
+      "type": "gauge",
+      "title": "PBS Memory",
+      "description": "PBS VM memory usage (3 GB allocated). PBS uses memory for chunk-store cache — high but stable usage is normal and helps dedup speed.",
+      "datasource": "Prometheus",
+      "gridPos": {
+        "x": 6,
+        "y": 27,
+        "w": 6,
+        "h": 6
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "(1 - (node_memory_MemAvailable_bytes{job=\"site-node-exporter\", instance=\"192.0.2.4:9100\"} / node_memory_MemTotal_bytes{job=\"site-node-exporter\", instance=\"192.0.2.4:9100\"})) * 100",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "decimals": 1,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#73BF69",
+                "value": null
+              },
+              {
+                "color": "#FF9830",
+                "value": 70
+              },
+              {
+                "color": "#F2495C",
+                "value": 85
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 407,
+      "type": "gauge",
+      "title": "pve2 root disk",
+      "description": "pve2 root disk usage (32 GB for the hypervisor OS). Note: the PBS datastore disk is a SEPARATE disk — see the 'Datastore Capacity' gauge.",
+      "datasource": "Prometheus",
+      "gridPos": {
+        "x": 12,
+        "y": 27,
+        "w": 6,
+        "h": 6
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "(1 - (node_filesystem_avail_bytes{job=\"site-node-exporter\", instance=\"192.0.2.3:9100\", mountpoint=\"/\"} / node_filesystem_size_bytes{job=\"site-node-exporter\", instance=\"192.0.2.3:9100\", mountpoint=\"/\"})) * 100",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "decimals": 1,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#73BF69",
+                "value": null
+              },
+              {
+                "color": "#FF9830",
+                "value": 70
+              },
+              {
+                "color": "#F2495C",
+                "value": 85
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 408,
+      "type": "gauge",
+      "title": "PBS root disk",
+      "description": "PBS root disk usage (28 GB for the OS). Backup data is stored on /mnt/datastore (a separate 400 GB disk) — see the 'Datastore Capacity' gauge.",
+      "datasource": "Prometheus",
+      "gridPos": {
+        "x": 18,
+        "y": 27,
+        "w": 6,
+        "h": 6
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "(1 - (node_filesystem_avail_bytes{job=\"site-node-exporter\", instance=\"192.0.2.4:9100\", mountpoint=\"/\"} / node_filesystem_size_bytes{job=\"site-node-exporter\", instance=\"192.0.2.4:9100\", mountpoint=\"/\"})) * 100",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "decimals": 1,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#73BF69",
+                "value": null
+              },
+              {
+                "color": "#FF9830",
+                "value": 70
+              },
+              {
+                "color": "#F2495C",
+                "value": 85
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 500,
+      "type": "row",
+      "title": "Host Resource Trend",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 33,
+        "w": 24,
+        "h": 1
+      }
+    },
+    {
+      "id": 501,
+      "type": "timeseries",
+      "title": "pve2 & PBS memory (trend)",
+      "description": "pve2 and PBS memory trend. Useful to confirm usage is stable rather than creeping up (a sign of a memory leak). The gauges above are enough for current conditions.",
+      "datasource": "Prometheus",
+      "gridPos": {
+        "x": 0,
+        "y": 34,
+        "w": 12,
+        "h": 7
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "(1 - (node_memory_MemAvailable_bytes{job=\"site-node-exporter\", instance=~\"192.0.2.[34]:9100\"} / node_memory_MemTotal_bytes{job=\"site-node-exporter\", instance=~\"192.0.2.[34]:9100\"})) * 100",
+          "legendFormat": "{{instance}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "custom": {
+            "fillOpacity": 10,
+            "lineWidth": 2
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#73BF69",
+                "value": null
+              },
+              {
+                "color": "#FF9830",
+                "value": 85
+              },
+              {
+                "color": "#F2495C",
+                "value": 95
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 502,
+      "type": "timeseries",
+      "title": "pve2 & PBS CPU (trend)",
+      "description": "CPU trend to see the pattern (e.g. a nightly spike during backup). The gauges above are enough for current conditions; this panel is for judging whether the numbers are reasonable over time.",
+      "datasource": "Prometheus",
+      "gridPos": {
+        "x": 12,
+        "y": 34,
+        "w": 12,
+        "h": 7
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "100 - (avg by (instance) (rate(node_cpu_seconds_total{job=\"site-node-exporter\", instance=~\"192.0.2.[34]:9100\", mode=\"idle\"}[5m])) * 100)",
+          "legendFormat": "{{instance}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "custom": {
+            "fillOpacity": 10,
+            "lineWidth": 2
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#73BF69",
+                "value": null
+              },
+              {
+                "color": "#FF9830",
+                "value": 80
+              },
+              {
+                "color": "#F2495C",
+                "value": 90
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    }
+  ],
+  "links": [
+    {
+      "title": "site Server Overview",
+      "type": "link",
+      "url": "/d/site-overview",
+      "icon": "external link",
+      "targetBlank": false
+    }
+  ]
+}

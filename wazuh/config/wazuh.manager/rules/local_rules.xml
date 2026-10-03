@@ -1,0 +1,62 @@
+<!--
+  Custom rules — monitoring stack (self-hosted VPS)
+
+  Context: the Wazuh manager captures /var/log/nginx/access.log from the VPS
+  host (and from the site VMs) to detect web attacks. Two built-in Wazuh rules
+  fire false positives from NORMAL Grafana dashboard activity:
+
+    31533 (level 10) — "High amount of POST requests in a small period of
+                       time (likely bot)" — frequency 8 / timeframe 20s
+    31151 (level 10) — "Multiple web server 400 error codes from same source
+                       ip" — frequency 14 / timeframe 90s
+
+  Cause: the Grafana dashboard uses a 30-second auto-refresh and its panels
+  call POST /api/ds/query many times per refresh (one request per panel x per
+  datasource). Opening a single dashboard once already exceeds the 8 POST/20s
+  threshold. So EVERY TIME the admin opens the dashboard, Wazuh treats it as a
+  bot.
+
+  This is not just noise: since the Alertmanager integration went live, every
+  false positive immediately becomes a Telegram notification. Opening the
+  dashboard = a flood of notifications, and the genuinely important ones (SSH
+  brute force, port scan) drown.
+
+  Fix: override the PARENT rule to level 0 for the Grafana URLs. Why the parent
+  and not rule 31533/31151 itself:
+    - 31533 uses <if_matched_sid>31530</if_matched_sid> + <same_source_ip>.
+      It COUNTS occurrences of rule 31530. If 31530 no longer produces an alert
+      for these URLs, the count never reaches frequency 8 and 31533 never fires.
+      Excluding in 31533 itself is not possible (that rule has no <url> field to
+      compare against).
+    - The same pattern is already used by Wazuh's built-in rule 31531
+      (whitelist for /wp-admin/, /administrator/, /admin/). The rule below
+      mirrors that pattern.
+
+  SAFE: this exception applies only to the /api/ds/query URL (a Grafana internal
+  endpoint). Consecutive POSTs to any other endpoint — including exploit attempts
+  against the application — still fire 31533/31151 as usual. No foreign scanner
+  is protected by this rule.
+-->
+
+<group name="web,appsec,grafana_whitelist,">
+
+  <!-- Grafana: POST /api/ds/query on dashboard auto-refresh.
+       Also matched against /api/live/ws (streaming) so it stays safe if
+       Grafana is later used in live mode. -->
+  <rule id="100200" level="0">
+    <if_sid>31530</if_sid>
+    <url>/api/ds/query|/api/live/ws</url>
+    <description>Grafana internal API POST (dashboard refresh) - not a bot.</description>
+  </rule>
+
+  <!-- Grafana: 400 from /api/ds/query. Happens when a panel has a query error,
+       a datasource times out, or a datasource is not ready when the dashboard
+       opens. Realistic in this setup (the LokiSite datasource over WireGuard
+       can time out), and not an attack indicator. -->
+  <rule id="100201" level="0">
+    <if_sid>31101</if_sid>
+    <url>/api/ds/query</url>
+    <description>Grafana internal API 400 (panel/datasource error) - not a scan.</description>
+  </rule>
+
+</group>

@@ -1,0 +1,28 @@
+hosts:
+  - 1513629884013:
+      url: "https://wazuh.manager"
+      port: 55000
+      username: wazuh-wui
+      # IMPORTANT: the password here MUST be the real value, not a placeholder.
+      #
+      # This file is generated from a template by deploy.sh (envsubst), mirroring
+      # the alertmanager.yml.template -> alertmanager.generated.yml pattern. The
+      # real password NEVER enters the repo.
+      #
+      # WHY a template (a bug that actually happened):
+      #   A previous version put the literal string "placeholder-override-via-env-var"
+      #   here, assuming the image entrypoint would replace it from the
+      #   API_PASSWORD env var. THAT ASSUMPTION WAS WRONG — no entrypoint performs
+      #   that substitution. Wazuh docs and wazuh/wazuh-docker issue #838 confirm:
+      #   the value in wazuh.yml is used as-is.
+      #
+      #   As a result the dashboard sent that literal password to the manager API:
+      #     wazuh-wui 172.23.0.3 "POST /security/user/authenticate" ... 401
+      #   and the UI showed "The API connections could be down or inaccessible"
+      #   even though the API was healthy (curl from inside the manager returned 200).
+      #
+      #   The distinguishing symptom: responseTime in api.log was 1-3 seconds (the
+      #   dashboard really did try to verify) but always 401, while a manual login
+      #   returned 200.
+      password: "${WAZUH_INDEXER_ADMIN_PASSWORD}"
+      run_as: true

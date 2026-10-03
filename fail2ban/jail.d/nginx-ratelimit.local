@@ -1,0 +1,55 @@
+# fail2ban jail — Target-1 (site)
+# Installed as /etc/fail2ban/jail.d/nginx-ratelimit.local
+# NOT deployed automatically by CI/CD — reference/backup only.
+#
+# ---------------------------------------------------------------------------
+# ignoreip = ban exemption, NOT an allowlist
+# ---------------------------------------------------------------------------
+# Target-1 has NO allowlist — anyone from anywhere can open the application.
+# The domain + SSL were set up precisely so it is reachable from anywhere.
+# `ignoreip` only means "never ban this IP".
+#
+# 192.0.2.0/24 and 198.51.100.0/24 = the site networks (staff and general users).
+# 203.0.113.0/24 = the VPN pool. Added because the operator connects from
+#   203.0.113.2, and before this a single mistake producing repeated 404s could
+#   get the operator banned from their own server.
+#
+# Deliberately NOT using ignoreip to restrict access: the owner often leaves
+# home and reaches the monitor from a phone on a changing mobile IP. A static
+# whitelist would lock the owner out.
+#
+# ---------------------------------------------------------------------------
+# backend = auto REQUIRED
+# ---------------------------------------------------------------------------
+# /etc/fail2ban/jail.d/defaults-debian.conf on Target-1 sets backend = systemd,
+# which reads journald. Our filter reads /var/log/nginx/access.log — a file,
+# not the journal. With the systemd backend the jail looks "enabled" and
+# `fail2ban-client status` looks healthy, BUT it never bans anyone.
+#
+# ---------------------------------------------------------------------------
+# Thresholds (raised)
+# ---------------------------------------------------------------------------
+# maxretry 20 -> 30, findtime 60 -> 120 seconds.
+# Reason: the new filter also catches 404, and 404 is far easier to produce
+# than 429. The threshold was raised so a legitimate user who mistypes a URL
+# repeatedly is not banned immediately. A scanner firing hundreds of paths
+# (203.0.113.12: 2,408 requests) is still caught far above this threshold.
+#
+# bantime 900 (15 minutes) kept on Target-1. On Target-2 it was raised to 24
+# hours because scanners there cycle ban-unban continuously; on Target-1 it has
+# not been re-measured. If alert 31151 stays noisy on Target-1, raise bantime here.
+#
+# banaction not forced: inherits nftables from defaults-debian.conf.
+# Verify: nft list set inet f2b-table addr-set-nginx-ratelimit-access
+
+[nginx-ratelimit-access]
+enabled  = true
+backend  = auto
+logpath  = /var/log/nginx/access.log
+port     = http,https
+filter   = nginx-ratelimit-access
+maxretry = 30
+findtime = 120
+bantime  = 900
+
+# The default sshd jail is NOT overridden in this file — leave it in jail.local/defaults.

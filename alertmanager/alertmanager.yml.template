@@ -1,0 +1,135 @@
+# Alertmanager routing config.
+# Rendered from .env by deploy.sh: envsubst < alertmanager.yml.template > alertmanager.generated.yml
+# which is then mounted into the alertmanager container in docker-compose.yml.
+#
+# Routing strategy:
+#   - All alerts -> telegram-default channel (TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID
+#     from the CI/CD env vars already configured). The operator decides escalation.
+#   - Severity: critical uses the 🔴 emoji + repeat 1h, warning uses ⚠️ + repeat 6h.
+#   - The scope label is included in the message so the operator can filter
+#     VPS vs site directly in the chat.
+#
+# ENV vars (already in CI/CD):
+#   - TELEGRAM_BOT_TOKEN: bot token from BotFather
+#   - TELEGRAM_CHAT_ID: the operator's personal chat ID
+
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: telegram-default
+  group_by: ["alertname", "scope"]
+  group_wait: 10s
+  group_interval: 5m
+  repeat_interval: 6h
+
+  routes:
+    # Critical alerts -> immediate notification, repeat every 1h until resolved.
+    - matchers:
+        - severity = "critical"
+      receiver: telegram-critical
+      group_wait: 0s
+      repeat_interval: 1h
+      continue: true
+
+receivers:
+  # Default receiver — every alert goes here. The message format includes the
+  # scope label (vps-host, site-container, etc.) so the operator can filter
+  # in Telegram or see priority at a glance.
+  - name: telegram-default
+    telegram_configs:
+      - bot_token: "${TELEGRAM_BOT_TOKEN}"
+        chat_id: ${TELEGRAM_CHAT_ID}
+        api_url: "https://api.telegram.org"
+        parse_mode: "HTML"
+        message: |
+          {{ range .Alerts }}
+          {{ if eq .Labels.severity "critical" }}🔴{{ else }}⚠️{{ end }} <b>{{ .Labels.alertname }}</b> ({{ .Labels.severity | toUpper }})
+          {{ if .Labels.scope }}scope: <code>{{ .Labels.scope }}</code>{{ end }}
+          {{ .Annotations.summary }}
+
+          {{ .Annotations.description }}
+
+          {{ if .Labels.instance }}host: <code>{{ .Labels.instance }}</code>{{ end }}
+          {{ if .Labels.container }}container: <code>{{ .Labels.container }}</code>{{ end }}
+          {{ if .Labels.image }}image: <code>{{ .Labels.image }}</code>{{ end }}
+          {{ if .Labels.name }}vm: <code>{{ .Labels.name }}</code>{{ end }}
+          {{ if .Labels.mountpoint }}mountpoint: <code>{{ .Labels.mountpoint }}</code>{{ end }}
+          <a href="https://grafana.example.net">Dashboard</a>
+          {{ end }}
+
+  # Critical receiver — same channel but a slightly different format (more
+  # concise, action-focused). The point is that when many critical alerts fire,
+  # the operator can filter Telegram by the 🔴 emoji.
+  - name: telegram-critical
+    telegram_configs:
+      - bot_token: "${TELEGRAM_BOT_TOKEN}"
+        chat_id: ${TELEGRAM_CHAT_ID}
+        api_url: "https://api.telegram.org"
+        parse_mode: "HTML"
+        message: |
+          {{ range .Alerts }}
+          🔴 <b>CRITICAL: {{ .Labels.alertname }}</b>
+          {{ if .Labels.scope }}scope: <code>{{ .Labels.scope }}</code>{{ end }}
+          {{ .Annotations.summary }}
+
+          {{ if .Labels.instance }}host: <code>{{ .Labels.instance }}</code>{{ end }}
+          {{ if .Labels.container }}container: <code>{{ .Labels.container }}</code>{{ end }}
+          {{ if .Labels.name }}vm: <code>{{ .Labels.name }}</code>{{ end }}
+          <a href="https://grafana.example.net">Dashboard</a>
+          {{ end }}
+
+inhibit_rules:
+  # VPS: VpsHostDown suppresses VPS host resource alerts (once "down" is known,
+  # resource alerts are redundant).
+  - source_matchers:
+      - alertname = "VpsHostDown"
+      - scope = "vps-host"
+    target_matchers:
+      - scope = "vps-host"
+    equal: ["instance"]
+
+  # site: SiteHostDown suppresses site host resource alerts.
+  - source_matchers:
+      - alertname = "SiteHostDown"
+      - scope = "site-host"
+    target_matchers:
+      - scope = "site-host"
+    equal: ["instance"]
+
+  # site: SiteVMNotRunning suppresses VM resource alerts.
+  - source_matchers:
+      - alertname = "SiteVMNotRunning"
+      - scope = "site-vm"
+    target_matchers:
+      - scope = "site-vm"
+    equal: ["name"]
+
+  # site: SiteContainerDown suppresses container resource alerts.
+  - source_matchers:
+      - alertname = "SiteContainerDown"
+      - scope = "site-container"
+    target_matchers:
+      - scope = "site-container"
+    equal: ["host", "container"]
+
+  # Site Backup: if the monitoring script fails to query PBS, every downstream
+  # alert (Overdue / NeverSucceeded / VmMissing) becomes untrustworthy — its
+  # value may be a false zero from a failed query, not because the data is
+  # truly 0. Suppress them so the operator focuses on a single root cause:
+  # connectivity/token to PBS.
+  - source_matchers:
+      - alertname = "SiteBackupMonitorDown"
+      - scope = "site-backup"
+    target_matchers:
+      - scope = "site-backup"
+    equal: ["host"]
+
+  # Site Backup: the monitor not running (dead timer) also makes every metric
+  # stale, so the downstream alerts are suppressed for the same reason.
+  - source_matchers:
+      - alertname = "SiteBackupMonitorStale"
+      - scope = "site-backup"
+    target_matchers:
+      - scope = "site-backup"
+    equal: ["host"]

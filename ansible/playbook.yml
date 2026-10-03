@@ -1,0 +1,401 @@
+---
+# Playbook to set up the site infrastructure persistently & reproducibly from code.
+#
+# Currently handles:
+#   1. pve: NAT redirect for Loki push (192.0.2.2:3100 -> 10.200.200.1:3100)
+#      PERSISTENT via iptables-persistent (rules saved to /etc/iptables/rules.v4,
+#      restored on boot). Without this, the NAT rule is lost on a pve reboot and
+#      the Grafana LokiSite datasource fails to connect.
+#   2. target-1 & target-2: docker-textfile collector — script + systemd timer + dir
+#      setup. Exposes docker_container_up / restart_count / health_status to
+#      Prometheus for the "Docker Container Health" dashboard.
+#   3. target-1 & target-2: enable the textfile collector in node_exporter.
+#
+# Idempotent: safe to run repeatedly with no side effects. Tasks that are
+# already correct are skipped ("ok" state) on re-run.
+#
+# Usage:
+#   cd ansible/
+#   ansible-playbook -i inventory.ini playbook.yml
+#
+# Tags:
+#   --tags nat          : pve NAT setup only
+#   --tags textfile     : docker-textfile collector setup only
+#   --tags nodeexp      : node_exporter textfile arg only
+#   --tags wazuh-agent  : Wazuh agent install (site) only
+
+- name: Set up NAT redirect on pve for the LokiSite datasource
+  hosts: pve
+  become: yes
+  gather_facts: no
+  vars:
+    nat_target_ip: "192.0.2.2"
+    nat_target_port: "3100"
+    nat_dest: "10.200.200.1:3100"
+  tasks:
+    - name: Install iptables-persistent (rules saved to /etc/iptables/rules.v4, restored on boot)
+      ansible.builtin.apt:
+        name: iptables-persistent
+        state: present
+        update_cache: yes
+
+    - name: PREROUTING — redirect Loki push from wg0 (VPS via WireGuard) to VPS Loki
+      ansible.builtin.iptables:
+        table: nat
+        chain: PREROUTING
+        protocol: tcp
+        in_interface: wg0
+        destination: "{{ nat_target_ip }}"
+        destination_port: "{{ nat_target_port }}"
+        jump: DNAT
+        to_destination: "{{ nat_dest }}"
+        comment: "site-monitoring: VPS Loki push via WireGuard -> VPS Loki"
+      notify: save iptables
+
+    - name: PREROUTING — redirect Loki push from vmbr0 (site local network)
+      ansible.builtin.iptables:
+        table: nat
+        chain: PREROUTING
+        protocol: tcp
+        in_interface: vmbr0
+        destination: "{{ nat_target_ip }}"
+        destination_port: "{{ nat_target_port }}"
+        jump: DNAT
+        to_destination: "{{ nat_dest }}"
+        comment: "site-monitoring: site-local Loki push -> VPS Loki"
+      notify: save iptables
+
+    - name: OUTPUT — redirect Loki push from pve itself (loopback)
+      ansible.builtin.iptables:
+        table: nat
+        chain: OUTPUT
+        protocol: tcp
+        destination: "{{ nat_target_ip }}"
+        destination_port: "{{ nat_target_port }}"
+        jump: DNAT
+        to_destination: "{{ nat_dest }}"
+        comment: "site-monitoring: pve-local Loki push -> VPS Loki"
+      notify: save iptables
+
+  handlers:
+    - name: Save iptables rules so they persist across a reboot
+      ansible.builtin.command: iptables-save > /etc/iptables/rules.v4
+      listen: save iptables
+      changed_when: true
+
+- name: Set up the docker-textfile collector on the site VMs
+  hosts: site
+  become: yes
+  gather_facts: no
+  tasks:
+    - name: Create the textfile collector directory (owned node_exporter:node_exporter, world-readable)
+      ansible.builtin.file:
+        path: /var/lib/node_exporter/textfile_collector
+        state: directory
+        owner: node_exporter
+        group: node_exporter
+        mode: '0755'
+
+    - name: Copy the docker-textfile.sh script
+      ansible.builtin.copy:
+        src: docker-textfile.sh
+        dest: /usr/local/bin/docker-textfile.sh
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Install the docker-textfile systemd service
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/docker-textfile.service
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          [Unit]
+          Description=Generate Docker container metrics for the node_exporter textfile collector
+
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/local/bin/docker-textfile.sh
+          User=root
+
+    - name: Install the docker-textfile systemd timer (runs every 60 seconds)
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/docker-textfile.timer
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          [Unit]
+          Description=Run docker-textfile.sh every 60 seconds
+
+          [Timer]
+          OnBootSec=10s
+          OnUnitActiveSec=60s
+
+          [Install]
+          WantedBy=timers.target
+
+    - name: Enable & start the docker-textfile timer
+      ansible.builtin.systemd:
+        daemon_reload: yes
+        name: docker-textfile.timer
+        enabled: yes
+        state: started
+
+    - name: Enable the textfile collector in the node_exporter service
+      ansible.builtin.lineinfile:
+        path: /etc/systemd/system/node_exporter.service
+        regexp: '^ExecStart=/usr/local/bin/node_exporter\s*$'
+        line: 'ExecStart=/usr/local/bin/node_exporter --collector.textfile.directory=/var/lib/node_exporter/textfile_collector'
+        backrefs: yes
+      notify: restart node_exporter
+
+  handlers:
+    - name: Restart node_exporter so the textfile collector takes effect
+      ansible.builtin.systemd:
+        name: node_exporter
+        state: restarted
+        daemon_reload: yes
+      listen: restart node_exporter
+
+- name: Set up promtail on target-1 (ship nginx logs to Loki)
+  hosts: target-1
+  become: yes
+  gather_facts: no
+  tasks:
+    # /var/log/nginx/*.log is mode 640 owned by www-data, group adm. The promtail
+    # user needs adm-group membership, otherwise the nginx job reads zero lines
+    # and fails silently. Without this task the promtail config looks correct but
+    # produces not a single log line in Loki.
+    - name: Add the promtail user to the adm group (so it can read /var/log/nginx/*.log)
+      ansible.builtin.user:
+        name: promtail
+        groups: adm
+        append: yes
+      notify: restart promtail
+
+    - name: Copy the promtail config for target-1 (journal + docker + nginx jobs)
+      ansible.builtin.copy:
+        src: ../promtail/promtail-config-target-1.yml
+        dest: /etc/promtail/config.yml
+        owner: root
+        group: root
+        mode: '0644'
+        backup: yes
+      notify: restart promtail
+
+    - name: Ensure the promtail service is enabled & running
+      ansible.builtin.systemd:
+        name: promtail
+        enabled: yes
+        state: started
+
+  handlers:
+    - name: Restart promtail so the config & adm group take effect
+      ansible.builtin.systemd:
+        name: promtail
+        state: restarted
+      listen: restart promtail
+
+- name: Set up pbs-backup-monitor on pve2 (watch PBS backup status)
+  hosts: pve2
+  become: yes
+  gather_facts: no
+  tasks:
+    - name: Ensure the textfile collector directory exists
+      ansible.builtin.file:
+        path: /var/lib/node_exporter/textfile_collector
+        state: directory
+        owner: node_exporter
+        group: node_exporter
+        mode: '0755'
+
+    - name: Copy pbs-backup-monitor.sh
+      ansible.builtin.copy:
+        src: pbs-backup-monitor.sh
+        dest: /usr/local/bin/pbs-backup-monitor.sh
+        owner: root
+        group: root
+        mode: '0755'
+
+    # PBS token file. The secret is not stored in the repo — it comes from an
+    # Ansible variable (vault / --extra-vars) or already exists on the host from
+    # manual provisioning. This task only ensures the permission is correct.
+    - name: Ensure /etc/pbs-monitor.env exists with mode 600
+      ansible.builtin.file:
+        path: /etc/pbs-monitor.env
+        state: touch
+        owner: root
+        group: root
+        mode: '0600'
+        modification_time: preserve
+        access_time: preserve
+
+    - name: Install pbs-backup-monitor.service
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/pbs-backup-monitor.service
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          [Unit]
+          Description=Monitor PBS backup status for the node_exporter textfile collector
+          After=network-online.target
+
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/local/bin/pbs-backup-monitor.sh
+          User=root
+
+    - name: Install pbs-backup-monitor.timer (every 5 minutes)
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/pbs-backup-monitor.timer
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          [Unit]
+          Description=Run pbs-backup-monitor.sh every 5 minutes
+
+          [Timer]
+          OnBootSec=60s
+          OnUnitActiveSec=300s
+
+          [Install]
+          WantedBy=timers.target
+
+    - name: Enable & start the pbs-backup-monitor timer
+      ansible.builtin.systemd:
+        daemon_reload: yes
+        name: pbs-backup-monitor.timer
+        enabled: yes
+        state: started
+
+    # node_exporter on pve2/pbs was installed manually during provisioning (not
+    # via the playbook) because PBS runs its own image. This task ensures the
+    # textfile collector flag survives if the service is ever overwritten.
+    - name: Ensure the textfile collector is active in node_exporter on pve2
+      ansible.builtin.lineinfile:
+        path: /etc/systemd/system/node_exporter.service
+        regexp: '^ExecStart=/usr/local/bin/node_exporter'
+        line: 'ExecStart=/usr/local/bin/node_exporter --collector.textfile.directory=/var/lib/node_exporter/textfile_collector'
+      notify: restart node_exporter pve2
+
+  handlers:
+    - name: Restart node_exporter on pve2
+      ansible.builtin.systemd:
+        name: node_exporter
+        state: restarted
+        daemon_reload: yes
+      listen: restart node_exporter pve2
+
+- name: Set up the WireGuard route + Wazuh agent on pve2 and pbs
+  hosts: ifupdown-hosts
+  become: yes
+  gather_facts: yes
+  vars:
+    pve1_ip: "192.0.2.2"
+    wg_network: "10.200.200.0/24"
+    wazuh_manager_ip: "10.200.200.1"
+    wazuh_version: "4.x.y"   # pin to the exact Wazuh release you deploy
+    # Physical interface per host (pve2 = vmbr0, pbs = nic0).
+    wg_route_interface: "{{ 'vmbr0' if inventory_hostname == '192.0.2.3' else 'nic0' }}"
+  tasks:
+    # Route to the WireGuard network via pve1 — the only host with wg0.
+    # Without this, the agent cannot enroll with the manager on the VPS.
+    - name: Check whether the route already exists in the config
+      ansible.builtin.command: grep -c "{{ wg_network }}" /etc/network/interfaces
+      register: route_check
+      changed_when: false
+      failed_when: false
+
+    - name: Back up /etc/network/interfaces
+      ansible.builtin.copy:
+        src: /etc/network/interfaces
+        dest: "/etc/network/interfaces.bak.ansible"
+        remote_src: yes
+        mode: '0644'
+      when: route_check.stdout | int == 0
+
+    - name: Add a persistent route in the iface block
+      ansible.builtin.replace:
+        path: /etc/network/interfaces
+        regexp: '^(\t)(gateway {{ pve1_ip }})$'
+        replace: "\t\\2\n\tup ip route add {{ wg_network }} via {{ pve1_ip }} || true\n\tdown ip route del {{ wg_network }} via {{ pve1_ip }} || true"
+      when: route_check.stdout | int == 0
+
+    # Apply the route now without ifdown/up (avoids dropping the SSH connection).
+    - name: Apply the route now
+      ansible.builtin.command: "ip route add {{ wg_network }} via {{ pve1_ip }}"
+      register: route_add
+      changed_when: route_add.rc == 0
+      failed_when: false
+
+    - name: Verify the route
+      ansible.builtin.command: "ip route get 10.200.200.1"
+      register: route_verify
+      changed_when: false
+      failed_when: "'via {{ pve1_ip }}' not in route_verify.stdout"
+
+    - name: Copy install-wazuh-agent.sh
+      ansible.builtin.copy:
+        src: install-wazuh-agent.sh
+        dest: /usr/local/bin/install-wazuh-agent.sh
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Install + enroll the Wazuh agent
+      ansible.builtin.command:
+        cmd: >-
+          AGENT_NAME="{{ wazuh_agent_name }}"
+          MANAGER_IP="{{ wazuh_manager_ip }}"
+          WAZUH_VERSION="{{ wazuh_version }}"
+          bash /usr/local/bin/install-wazuh-agent.sh
+      vars:
+        # Agent name: pve2 for .3, pbs for .4
+        wazuh_agent_name: "{{ 'pve2' if inventory_hostname == '192.0.2.3' else 'pbs' }}"
+      register: wazuh_install
+      changed_when: "'✓ Enrollment OK' in wazuh_install.stdout"
+
+    - name: Verify wazuh-agent is active
+      ansible.builtin.command: systemctl is-active wazuh-agent
+      register: wazuh_status
+      changed_when: false
+      failed_when: wazuh_status.stdout != "active"
+
+- name: Install the Wazuh agent on the site (pve, target-1, target-2) and enroll to the VPS
+  hosts: site
+  become: yes
+  gather_facts: yes
+  vars:
+    # Manager IP from the VPS WireGuard interface. Site agents connect via the tunnel.
+    wazuh_manager_ip: "10.200.200.1"
+    wazuh_version: "4.x.y"   # pin to the exact Wazuh release you deploy
+    # Override per-host via inventory group_vars / host_vars if needed.
+    # Default: use the inventory hostname so it is unique.
+    wazuh_agent_name: "{{ inventory_hostname }}"
+  tasks:
+    - name: Copy install-wazuh-agent.sh to /usr/local/bin
+      ansible.builtin.copy:
+        src: install-wazuh-agent.sh
+        dest: /usr/local/bin/install-wazuh-agent.sh
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Run the install script (idempotent — skips install/enroll if already done)
+      ansible.builtin.command:
+        cmd: >-
+          AGENT_NAME="{{ wazuh_agent_name }}"
+          MANAGER_IP="{{ wazuh_manager_ip }}"
+          WAZUH_VERSION="{{ wazuh_version }}"
+          bash /usr/local/bin/install-wazuh-agent.sh
+      register: wazuh_install
+      changed_when: "'✓' not in wazuh_install.stdout or 'already' in wazuh_install.stdout | lower"
+
+    - name: Show install output
+      ansible.builtin.debug:
+        var: wazuh_install.stdout_lines
+      when: wazuh_install is defined

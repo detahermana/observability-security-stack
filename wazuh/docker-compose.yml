@@ -1,0 +1,248 @@
+# Wazuh SIEM stack (single-node) for the VPS.
+# Used TOGETHER WITH the root docker-compose.yml (the existing monitoring stack),
+# WITHOUT touching other services. Separate lifecycle — can be upgraded/down without
+# affecting monitoring. CI/CD deploys with:
+#   docker compose -f docker-compose.yml -f wazuh/docker-compose.yml up -d
+#
+# The main pattern follows the official wazuh-docker docker-compose.yml:
+# https://github.com/wazuh/wazuh-docker/blob/master/single-node/docker-compose.yml
+#
+# IMPORTANT note for single-node:
+#   The wazuh-indexer image entrypoint.sh has a `run securityadmin.sh` line that
+#   is commented out for single-node. The image does NOT auto-init OpenSearch
+#   security. Therefore `config/wazuh.indexer/internal_users.yml` MUST be
+#   mounted, containing the bcrypt hash of the admin password. The hash is
+#   generated in a CI/CD step from $WAZUH_INDEXER_ADMIN_PASSWORD. See the CI config.
+#
+# Resource budget (to fit on a 2 vCPU / 8GB VPS alongside the monitoring stack):
+#   - indexer heap 1g + container 2g (OpenSearch needs a large JVM)
+#   - manager 1g container (enough for a few agents by default)
+#   - dashboard 1g container (OpenSearch Dashboards needs a JVM too)
+# Total ~4g, leaving 4g for the monitoring stack + applications.
+
+networks:
+  wazuh:
+    driver: bridge
+
+volumes:
+  wazuh_indexer_data:
+    name: wazuh_indexer_data
+  wazuh_api_configuration:
+    name: wazuh_api_configuration
+  wazuh_etc:
+    name: wazuh_etc
+  wazuh_logs:
+    name: wazuh_logs
+  wazuh_queue:
+    name: wazuh_queue
+  wazuh_var_multigroups:
+    name: wazuh_var_multigroups
+  wazuh_integrations:
+    name: wazuh_integrations
+  wazuh_active_response:
+    name: wazuh_active_response
+  wazuh_agentless:
+    name: wazuh_agentless
+  wazuh_wodles:
+    name: wazuh_wodles
+  filebeat_etc:
+    name: filebeat_etc
+  filebeat_var:
+    name: filebeat_var
+  wazuh_dashboard_data:
+    name: wazuh_dashboard_data
+
+services:
+  wazuh.indexer:
+    image: wazuh/wazuh-indexer:${WAZUH_VERSION:-4.x.y}
+    hostname: wazuh.indexer
+    container_name: wazuh-indexer
+    restart: unless-stopped
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    env_file:
+      - ./.env
+    environment:
+      # Timezone (UTC+7). A container does not inherit the host timezone — the
+      # image has its own /etc/localtime, so TZ must be set explicitly per service.
+      # The indexer uses this for the timestamp of indexed documents.
+      - TZ=${TZ:-Asia/Jakarta}
+      # OpenSearch JVM heap
+      - "OPENSEARCH_JAVA_OPTS=${OPENSEARCH_JAVA_OPTS:--Xms1g -Xmx1g}"
+      # Bootstrap admin password. The Wazuh image ENTRYPOINT expects this var
+      # (not INDEXER_SECURITY_ADMIN_PASSWORD) to set the keystore bootstrap.password.
+      - "INDEXER_PASSWORD=${WAZUH_INDEXER_ADMIN_PASSWORD}"
+    volumes:
+      - wazuh_indexer_data:/var/lib/wazuh-indexer
+      # Cert files (generated via setup-certs.sh)
+      - ./certs/root-ca.pem:/usr/share/wazuh-indexer/config/certs/root-ca.pem:ro
+      - ./certs/wazuh.indexer.pem:/usr/share/wazuh-indexer/config/certs/wazuh.indexer.pem:ro
+      - ./certs/wazuh.indexer.key:/usr/share/wazuh-indexer/config/certs/wazuh.indexer.key:ro
+      - ./certs/admin.pem:/usr/share/wazuh-indexer/config/certs/admin.pem:ro
+      - ./certs/admin-key.pem:/usr/share/wazuh-indexer/config/certs/admin-key.pem:ro
+      # OpenSearch config override
+      - ./config/wazuh.indexer/wazuh.indexer.yml:/usr/share/wazuh-indexer/config/opensearch.yml:ro
+      # Internal users — REQUIRED because entrypoint.sh has its auto-init security
+      # commented out for single-node. This file holds the bcrypt admin hash.
+      # The hash is generated in CI/CD from $WAZUH_INDEXER_ADMIN_PASSWORD.
+      - ./config/wazuh.indexer/internal_users.yml:/usr/share/wazuh-indexer/config/opensearch-security/internal_users.yml:ro
+    ports:
+      - "127.0.0.1:9200:9200"
+    networks:
+      - wazuh
+    mem_limit: 2g
+    cpus: 0.5
+    healthcheck:
+      # The indexer needs 2-3 minutes on first boot (JVM warmup, index creation).
+      # start_period 180s = grace period, during which the healthcheck is not counted.
+      # retries 18 x 30s = a 9-minute retry window after the grace period.
+      test: ["CMD-SHELL", "curl -s -k -u admin:${WAZUH_INDEXER_ADMIN_PASSWORD} https://localhost:9200/_cluster/health | grep -qE '\"status\":\"(green|yellow)\"'"]
+      interval: 30s
+      timeout: 10s
+      retries: 18
+      start_period: 180s
+
+  wazuh.manager:
+    image: wazuh/wazuh-manager:${WAZUH_VERSION:-4.x.y}
+    hostname: wazuh.manager
+    container_name: wazuh-manager
+    restart: unless-stopped
+    depends_on:
+      wazuh.indexer:
+        condition: service_healthy
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    env_file:
+      - ./.env
+    environment:
+      # Timezone (UTC+7). The manager stamps the time in alerts.log and forwards
+      # that timestamp to the integrator (custom-alertmanager) and to Filebeat.
+      - TZ=${TZ:-Asia/Jakarta}
+      # Memory limit for the Wazuh manager analysis process
+      - WAZUH_MANAGER_MEMORY=${WAZUH_MANAGER_MEMORY:-512m}
+      # Env vars for Filebeat (manager pushes logs to the indexer)
+      - INDEXER_URL=https://wazuh.indexer:9200
+      - INDEXER_USERNAME=admin
+      - "INDEXER_PASSWORD=${WAZUH_INDEXER_ADMIN_PASSWORD}"
+      - FILEBEAT_SSL_VERIFICATION_MODE=full
+      - SSL_CERTIFICATE_AUTHORITIES=/etc/ssl/root-ca.pem
+      - SSL_CERTIFICATE=/etc/ssl/filebeat.pem
+      - SSL_KEY=/etc/ssl/filebeat.key
+      # API for the dashboard to connect back to the manager
+      - API_USERNAME=wazuh-wui
+      - "API_PASSWORD=${WAZUH_INDEXER_ADMIN_PASSWORD}"
+    volumes:
+      # Manager state persistence
+      - wazuh_api_configuration:/var/ossec/api/configuration
+      - wazuh_etc:/var/ossec/etc
+      - wazuh_logs:/var/ossec/logs
+      - wazuh_queue:/var/ossec/queue
+      - wazuh_var_multigroups:/var/ossec/var/multigroups
+      - wazuh_integrations:/var/ossec/integrations
+      - wazuh_active_response:/var/ossec/active-response/bin
+      - wazuh_agentless:/var/ossec/agentless
+      - wazuh_wodles:/var/ossec/wodles
+      - filebeat_etc:/etc/filebeat
+      - filebeat_var:/var/lib/filebeat
+      # Cert files (the manager uses Filebeat to push to the indexer)
+      - ./certs/root-ca.pem:/etc/ssl/root-ca.pem:ro
+      - ./certs/wazuh.manager.pem:/etc/ssl/filebeat.pem:ro
+      - ./certs/wazuh.manager.key:/etc/ssl/filebeat.key:ro
+      # Config override
+      - ./config/wazuh.manager/ossec.conf:/wazuh-config-mount/etc/ossec.conf:ro
+      # Custom integrator (custom-alertmanager) — used by the <integration> block
+      # in ossec.conf to forward alerts to Alertmanager.
+      #
+      # Mount PER-FILE, not per-folder: /var/ossec/integrations/ already contains
+      # built-in scripts (slack, virustotal, pagerduty, ...). Mounting the folder
+      # would hide the built-ins. Wazuh looks for a script whose name is EXACTLY
+      # the <name> in /var/ossec/integrations/, so the file must sit directly at
+      # that path.
+      #
+      # Without this file, wazuh-modulesd errors every second:
+      #   "Unable to enable integration for: 'custom-alertmanager'.
+      #    File not found inside 'integrations'."
+      - ./config/wazuh.manager/integrations/custom-alertmanager:/var/ossec/integrations/custom-alertmanager:ro
+      - ./config/wazuh.manager/integrations/custom-alertmanager.py:/var/ossec/integrations/custom-alertmanager.py:ro
+      # Custom rules (exception for the Grafana dashboard false positive).
+      # Mount PER-FILE for the same reason as the integrator above:
+      # /var/ossec/etc/rules/ already contains built-in rules + the image's
+      # local_rules.xml. Mounting the folder would hide them all and weaken
+      # detection. The file is mounted under a DIFFERENT name (the image's own
+      # local_rules.xml stays intact, our rules become a separate file).
+      - ./config/wazuh.manager/rules/local_rules.xml:/var/ossec/etc/rules/custom-monitoring_rules.xml:ro
+    ports:
+      # Manager API (internal)
+      - "127.0.0.1:55000:55000"
+      # Agent comm — bound to the VPS WireGuard IP so site agents can connect
+      # over the WG tunnel. Only WG peers have access.
+      #
+      # 1514 = tcp, NOT udp. wazuh-remoted listens on TCP on this image:
+      #   wazuh-remoted: INFO: Started. Listening on port 1514/TCP (secure).
+      # Mapping udp makes agents get "Transport endpoint is not connected" —
+      # UDP packets reach the host but nothing is listening inside the container.
+      # If UDP is needed too, add a separate line; do not just swap the protocol.
+      - "10.200.200.1:1514:1514/tcp"
+      - "10.200.200.1:1515:1515"
+    networks:
+      - wazuh
+    # 2g (raised from 1g). Reason: wazuh-modulesd periodically runs a
+    # vulnerability-detection feed update — a heavy process that downloads large
+    # data into wazuh_queue. During a spike, the manager's usage reaches ~90% of
+    # the 1g limit and fires a "container high memory" alert, even though it is
+    # only temporary (it returns to ~30% once the feed finishes).
+    # mem_limit = an upper bound, not a reservation: the container still uses only
+    # what it needs. The total limit across all containers is ~6.9g of 7.5g RAM —
+    # still safe, and actual usage is far lower.
+    mem_limit: 2g
+    cpus: 0.3
+
+  wazuh.dashboard:
+    image: wazuh/wazuh-dashboard:${WAZUH_VERSION:-4.x.y}
+    hostname: wazuh.dashboard
+    container_name: wazuh-dashboard
+    restart: unless-stopped
+    depends_on:
+      wazuh.indexer:
+        condition: service_healthy
+    env_file:
+      - ./.env
+    environment:
+      # Timezone (UTC+7). The dashboard displays alert timestamps; this TZ makes
+      # the default clock display UTC+7. Index retention (ISM policy) also refers
+      # to this zone.
+      - TZ=${TZ:-Asia/Jakarta}
+      # Indexer connection
+      - INDEXER_USERNAME=admin
+      - "INDEXER_PASSWORD=${WAZUH_INDEXER_ADMIN_PASSWORD}"
+      # Manager API for the Wazuh app
+      - WAZUH_API_URL=https://wazuh.manager
+      - DASHBOARD_USERNAME=kibanaserver
+      - "DASHBOARD_PASSWORD=${WAZUH_DASHBOARD_PASSWORD}"
+      - API_USERNAME=wazuh-wui
+      - "API_PASSWORD=${WAZUH_INDEXER_ADMIN_PASSWORD}"
+    volumes:
+      - wazuh_dashboard_data:/usr/share/wazuh-dashboard/data
+      # Cert files (the dashboard uses these to connect to the indexer & manager)
+      - ./certs/root-ca.pem:/usr/share/wazuh-dashboard/certs/root-ca.pem:ro
+      - ./certs/wazuh.dashboard.pem:/usr/share/wazuh-dashboard/certs/wazuh-dashboard.pem:ro
+      - ./certs/wazuh.dashboard.key:/usr/share/wazuh-dashboard/certs/wazuh-dashboard.key:ro
+      # Dashboard config overrides
+      - ./config/wazuh.dashboard/opensearch_dashboards.yml:/usr/share/wazuh-dashboard/config/opensearch_dashboards.yml:ro
+      # wazuh.yml — MUST be the generated file (containing the real API password),
+      # NOT the template. Created by deploy.sh via envsubst from wazuh.yml.template.
+      # The real password never enters the repo.
+      - ./config/wazuh.dashboard/wazuh.yml.generated:/usr/share/wazuh-dashboard/data/wazuh/config/wazuh.yml:ro
+    ports:
+      - "127.0.0.1:5601:5601"
+    networks:
+      - wazuh
+    mem_limit: 1g
+    cpus: 0.2

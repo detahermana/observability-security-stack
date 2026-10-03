@@ -1,0 +1,88 @@
+stages:
+  - deploy
+
+deploy:
+  stage: deploy
+  image: alpine:latest
+  before_script:
+    - apk add --no-cache openssh-client
+    - eval $(ssh-agent -s)
+    - echo "$SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+    - mkdir -p ~/.ssh
+    - chmod 700 ~/.ssh
+    - ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+    - chmod 644 ~/.ssh/known_hosts
+  script:
+    # 1. Buat .env dari CI/CD variable PROD_ENV_FILE (strip CRLF)
+    - tr -d '\r' < "$PROD_ENV_FILE" > deploy.env
+    # 1b. Create wazuh/.env from the CI/CD variable PROD_WAZUH_ENV_FILE (if present).
+    #     Catatan: GitLab File-type variable STANDAR berisi path ke temp file,
+    #     tapi beberapa runner (incl. Kubernetes shared runner) expand ke
+    #     LITERAL content. Handle kedua kasus.
+    - |
+      if [ -n "${PROD_WAZUH_ENV_FILE:-}" ]; then
+        if [ -f "${PROD_WAZUH_ENV_FILE:-/__nonexistent__}" ]; then
+          cp "${PROD_WAZUH_ENV_FILE}" wazuh.deploy.env
+        else
+          echo "${PROD_WAZUH_ENV_FILE}" > wazuh.deploy.env
+        fi
+        tr -d '\r' < wazuh.deploy.env > wazuh.deploy.env.tmp \
+          && mv wazuh.deploy.env.tmp wazuh.deploy.env
+        echo "wazuh env file generated ($(wc -l < wazuh.deploy.env) lines)"
+      else
+        echo "PROD_WAZUH_ENV_FILE not set, skipping Wazuh deploy"
+        touch wazuh.deploy.env.skip
+      fi
+    # 1c. Generate bcrypt hash dari WAZUH_INDEXER_ADMIN_PASSWORD + tulis internal_users.yml.
+    #     WAJIB: wazuh-indexer image entrypoint.sh punya baris run securityadmin.sh
+    #     which is commented out for single-node. The image does NOT auto-init
+    #     OpenSearch security, so we must provide internal_users.yml with the bcrypt
+    #     admin hash. The hash is generated in CI so the production password never
+    #     enters the repo.
+    - |
+      if [ -f wazuh.deploy.env ] && [ ! -f wazuh.deploy.env.skip ]; then
+        apk add --no-cache py3-bcrypt 2>/dev/null || true
+        WAZUH_ADMIN_PWD=$(grep '^WAZUH_INDEXER_ADMIN_PASSWORD=' wazuh.deploy.env | cut -d= -f2-)
+        WAZUH_DASHBOARD_PWD=$(grep '^WAZUH_DASHBOARD_PASSWORD=' wazuh.deploy.env | cut -d= -f2-)
+        if [ -n "$WAZUH_ADMIN_PWD" ] && [ -n "$WAZUH_DASHBOARD_PWD" ]; then
+          # Export kedua password ke env, python baca via os.environ. Lebih aman
+          # than bash variable substitution (which breaks when the password
+          # punya karakter spesial seperti ', ", $, \, atau newline).
+          export WAZUH_ADMIN_PWD WAZUH_DASHBOARD_PWD
+          python3 wazuh/generate-internal-users.py
+        else
+          echo "WAZUH_INDEXER_ADMIN_PASSWORD or WAZUH_DASHBOARD_PASSWORD not found in the env file"
+          touch wazuh.deploy.internal_users.yml.skip
+        fi
+      else
+        echo "wazuh env file missing, skipping hash generation"
+        touch wazuh.deploy.internal_users.yml.skip
+      fi
+    # 2. Buat direktori project di VPS (sekali saja, idempotent)
+    - ssh "$VPS_USER@$VPS_HOST" "mkdir -p ${VPS_PROJECT_DIR}"
+    # 3. Upload seluruh konfigurasi stack ke VPS
+    - scp -r docker-compose.yml deploy.sh prometheus alertmanager promtail grafana docker-stats-exporter "${VPS_USER}@${VPS_HOST}:${VPS_PROJECT_DIR}/"
+    - scp -r wazuh "${VPS_USER}@${VPS_HOST}:${VPS_PROJECT_DIR}/"
+    - scp deploy.env "${VPS_USER}@${VPS_HOST}:${VPS_PROJECT_DIR}/.env"
+    # 3b. Upload the Wazuh env file if present
+    - |
+      if [ -f wazuh.deploy.env ] && [ ! -f wazuh.deploy.env.skip ]; then
+        scp wazuh.deploy.env "${VPS_USER}@${VPS_HOST}:${VPS_PROJECT_DIR}/wazuh/.env"
+        echo "wazuh/.env uploaded"
+      else
+        echo "wazuh/.env not generated, skipping upload"
+      fi
+    # 3c. Upload internal_users.yml with the bcrypt hash if present
+    - |
+      if [ -f wazuh.deploy.internal_users.yml ] && [ ! -f wazuh.deploy.internal_users.yml.skip ]; then
+        scp wazuh.deploy.internal_users.yml "${VPS_USER}@${VPS_HOST}:${VPS_PROJECT_DIR}/wazuh/config/wazuh.indexer/internal_users.yml"
+        echo "internal_users.yml uploaded"
+      else
+        echo "internal_users.yml not generated, skipping upload"
+      fi
+    # 4. Run deploy.sh on the VPS: generate the Alertmanager config from .env, then docker compose pull & up -d
+    - ssh "$VPS_USER@$VPS_HOST" "cd ${VPS_PROJECT_DIR} && chmod +x deploy.sh && ./deploy.sh"
+  environment:
+    name: production
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
